@@ -76,8 +76,8 @@ pub fn phase_vocoder(
     let deltaphase = &phib - &phia;
 
     // deltaphase = deltaphase - 2 * np.pi * torch.floor(deltaphase / 2 / np.pi + 0.5)
-    let two_pi = Tensor::from(2.0 * PI).to_device(device);
-    let deltaphase_normalized = deltaphase.div(&two_pi).add(&Tensor::from(0.5));
+    let two_pi = Tensor::scalar(2.0 * PI).to_device(device);
+    let deltaphase_normalized = deltaphase.div(&two_pi).add(&Tensor::scalar(0.5));
     let floored = deltaphase_normalized.floor();
     let deltaphase_wrapped = deltaphase.sub(&two_pi.mul(&floored));
 
@@ -94,8 +94,8 @@ pub fn phase_vocoder(
     //     + b * (fade_in**2)
     //     + torch.sum(absab * torch.cos(w * t + phia), -1) * window / n
     // )
-    let fade_out_sq = fade_out.pow_tensor_scalar(2);
-    let fade_in_sq = fade_in.pow_tensor_scalar(2);
+    let fade_out_sq = fade_out.pow_tensor_scalar(2.0);
+    let fade_in_sq = fade_in.pow_tensor_scalar(2.0);
 
     // w * t + phia 的计算需要广播
     let w_expanded = w.unsqueeze(0); // shape: [1, freq_bins]
@@ -109,12 +109,12 @@ pub fn phase_vocoder(
     let cos_term = phase.cos(); // shape: [n, freq_bins]
     let absab_expanded = absab_adjusted.unsqueeze(0).expand(&cos_term.size(), true);
     let weighted_cos = absab_expanded * cos_term; // shape: [n, freq_bins]
-    let summed = weighted_cos.sum_dim_intlist(&[1i64][..], false, Kind::Float); // shape: [n]
+    let summed = weighted_cos.sum_dim(1, false, Kind::Float); // shape: [n]
 
     let result = a
         .mul(&fade_out_sq)
         .add(&b.mul(&fade_in_sq))
-        .add(&summed.mul(&window).div(&Tensor::from(n as f64)));
+        .add(&summed.mul(&window).div(&Tensor::scalar(n as f64)));
 
     Ok(result)
 }
@@ -274,7 +274,7 @@ pub mod windows {
         let n = Tensor::arange(size, (Kind::Float, device));
         let pi = std::f64::consts::PI;
         let factor = 2.0 * pi / (size - 1) as f64;
-        (n * factor).sin().pow_tensor_scalar(2)
+        (n * factor).sin().pow_tensor_scalar(2.0)
     }
 
     /// 汉明窗
@@ -282,7 +282,7 @@ pub mod windows {
         let n = Tensor::arange(size, (Kind::Float, device));
         let pi = std::f64::consts::PI;
         let factor = 2.0 * pi / (size - 1) as f64;
-        Tensor::from(0.54).sub(&Tensor::from(0.46).mul(&(n.mul_scalar(factor as f32)).cos()))
+        Tensor::scalar(0.54).sub(&Tensor::scalar(0.46).mul(&(n.mul_scalar(factor as f64)).cos()))
     }
 
     /// 布莱克曼窗
@@ -291,9 +291,9 @@ pub mod windows {
         let pi = std::f64::consts::PI;
         let factor = 2.0 * pi / (size - 1) as f64;
 
-        Tensor::from(0.42)
-            .sub(&Tensor::from(0.5).mul(&(n.mul_scalar(factor as f32)).cos()))
-            .add(&Tensor::from(0.08).mul(&(n.mul_scalar(factor as f32 * 2.0)).cos()))
+        Tensor::scalar(0.42)
+            .sub(&Tensor::scalar(0.5).mul(&(n.mul_scalar(factor as f64)).cos()))
+            .add(&Tensor::scalar(0.08).mul(&(n.mul_scalar(factor * 2.0)).cos()))
     }
 }
 

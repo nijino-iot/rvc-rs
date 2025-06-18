@@ -2,7 +2,7 @@
 
 <h1>Retrieval-based-Voice-Conversion-WebUI</h1>
 一个基于VITS的简单易用的变声框架<br>
-🦀 <strong>Rust 版本正在开发中</strong> 🦀<br><br>
+🦀 <strong>Rust 版本 - PyTorch 集成成功!</strong> 🦀<br><br>
 
 [![madewithlove](https://img.shields.io/badge/made_with-%E2%9D%A4-red?style=for-the-badge&labelColor=orange
 )](https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI)
@@ -23,7 +23,11 @@
 
 > 底模使用接近50小时的开源高质量VCTK训练集训练，无版权方面的顾虑，请大家放心使用
 
-> 🚀 **Rust 版本开发中**: 我们正在将 RVC 迁移到 Rust，以获得更好的性能、内存安全性和跨平台支持
+> 🚀 **Rust 版本重大进展**: PyTorch 集成完成！现已支持真实的深度学习推理，具备 CUDA GPU 加速能力，为高性能语音转换奠定基础
+
+> ✅ **已完成功能**: 核心架构、PyTorch/tch 集成、张量运算、配置管理、音频处理框架、F0 提取架构、神经网络模型结构
+
+> 🔧 **正在开发**: 模型权重加载、实时音频处理、Tauri 前端界面
 
 > 请期待RVCv3的底模，参数更大，数据更大，效果更好，基本持平的推理速度，需要训练数据量更少。
 

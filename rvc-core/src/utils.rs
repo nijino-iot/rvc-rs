@@ -169,7 +169,7 @@ pub mod tensor_utils {
         let n = Tensor::arange(size, (Kind::Float, device));
         let pi = std::f64::consts::PI;
         let factor = 2.0 * pi / (size - 1) as f64;
-        (n * factor).sin().pow_tensor_scalar(2)
+        (n * factor).sin().pow_tensor_scalar(2.0)
     }
 
     /// 预加重滤波
@@ -181,12 +181,12 @@ pub mod tensor_utils {
 
         let shifted = Tensor::cat(
             &[
-                Tensor::zeros(&[1], audio.kind_device()),
-                audio.narrow(0, 0, size[0] - 1),
+                &Tensor::zeros(&[1], audio.kind_device()),
+                &audio.narrow(0, 0, size[0] - 1),
             ],
             0,
         );
-        Ok(audio.sub(&shifted.mul_scalar(coeff)))
+        Ok(audio.sub(&shifted.mul_scalar(coeff as f64)))
     }
 
     /// 去加重滤波
@@ -202,7 +202,7 @@ pub mod tensor_utils {
             } else {
                 Tensor::zeros(&[], audio.kind_device())
             };
-            let new_sample = current_sample.add(&prev_sample.mul_scalar(coeff));
+            let new_sample = current_sample.add(&prev_sample.mul_scalar(coeff as f64));
             result = result.slice_scatter(&new_sample.unsqueeze(0), 0, i as i64, 1);
         }
 
@@ -219,7 +219,7 @@ pub mod tensor_utils {
             // 填充零
             let padding = target_length - current_length;
             let zeros = Tensor::zeros(&[padding], tensor.kind_device());
-            Tensor::cat(&[tensor.shallow_clone(), zeros], 0)
+            Tensor::cat(&[&tensor.shallow_clone(), &zeros], 0)
         } else {
             // 截断
             tensor.narrow(0, 0, target_length)
@@ -236,7 +236,8 @@ pub mod tensor_utils {
         let padded_tensors: Vec<Tensor> =
             tensors.iter().map(|t| pad_or_trim(t, max_length)).collect();
 
-        Tensor::stack(&padded_tensors, 0)
+        let tensor_refs: Vec<&Tensor> = padded_tensors.iter().collect();
+        Tensor::stack(&tensor_refs, 0)
     }
 }
 

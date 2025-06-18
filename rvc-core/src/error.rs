@@ -34,6 +34,9 @@ pub enum RvcError {
     #[error("PyTorch 错误: {0}")]
     TorchError(String),
 
+    #[error("张量错误: {0}")]
+    TensorError(String),
+
     #[error("数学计算错误: {0}")]
     MathError(String),
 
@@ -110,6 +113,11 @@ impl RvcError {
     /// 创建参数错误
     pub fn parameter(msg: impl Into<String>) -> Self {
         Self::ParameterError(msg.into())
+    }
+
+    /// 创建张量错误
+    pub fn tensor(msg: impl Into<String>) -> Self {
+        Self::TensorError(msg.into())
     }
 
     /// 创建其他错误

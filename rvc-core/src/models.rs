@@ -186,6 +186,7 @@ impl RvcModel {
 /// 编码器模块
 #[derive(Debug)]
 pub struct Encoder {
+    input_projection: Option<Tensor>,
     layers: Vec<TransformerLayer>,
     norm: Tensor,
 }
@@ -208,11 +209,30 @@ impl Encoder {
 
         let norm = Tensor::ones(&[hidden_dim], (Kind::Float, Device::Cpu));
 
-        Ok(Self { layers, norm })
+        // Create input projection layer if input_dim != hidden_dim
+        let input_projection = if input_dim != hidden_dim {
+            Some(Tensor::randn(
+                &[input_dim, hidden_dim],
+                (Kind::Float, Device::Cpu),
+            ))
+        } else {
+            None
+        };
+
+        Ok(Self {
+            input_projection,
+            layers,
+            norm,
+        })
     }
 
     pub fn forward(&self, input: &Tensor) -> RvcResult<Tensor> {
-        let mut x = input.shallow_clone();
+        // Apply input projection if needed
+        let mut x = if let Some(ref projection) = self.input_projection {
+            input.matmul(projection)
+        } else {
+            input.shallow_clone()
+        };
 
         for layer in &self.layers {
             x = layer.forward(&x)?;
@@ -378,7 +398,7 @@ impl MultiHeadAttention {
             .transpose(1, 2);
 
         // 计算注意力分数
-        let scores = q.matmul(&k.transpose(-2, -1)).mul_scalar(self.scale as f32);
+        let scores = q.matmul(&k.transpose(-2, -1)).mul_scalar(self.scale as f64);
         let attn_weights = scores.softmax(-1, Kind::Float);
         let attn_weights = attn_weights.dropout(self.dropout, false);
 

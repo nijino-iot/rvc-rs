@@ -4,8 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-# 深度学习框架 - 暂时使用 mock 实现
-# tch = "0.16"  # 由于版本兼容性问题暂时禁用
+# 深度学习框架 - 使用 download-libtorch 特性自动配置
+tch = { version = "0.16", features = ["download-libtorch"] }
 # 音频处理
 hound = "3.5"
 dasp = "0.11"
