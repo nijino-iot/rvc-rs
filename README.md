@@ -1,7 +1,8 @@
 <div align="center">
 
 <h1>Retrieval-based-Voice-Conversion-WebUI</h1>
-一个基于VITS的简单易用的变声框架<br><br>
+一个基于VITS的简单易用的变声框架<br>
+🦀 <strong>Rust 版本正在开发中</strong> 🦀<br><br>
 
 [![madewithlove](https://img.shields.io/badge/made_with-%E2%9D%A4-red?style=for-the-badge&labelColor=orange
 )](https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI)
@@ -14,13 +15,15 @@
 
 [![Discord](https://img.shields.io/badge/RVC%20Developers-Discord-7289DA?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/HcsmBBGyVk)
 
-[**更新日志**](https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI/blob/main/docs/Changelog_CN.md) | [**常见问题解答**](https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI/wiki/%E5%B8%B8%E8%A7%81%E9%97%AE%E9%A2%98%E8%A7%A3%E7%AD%94) | [**AutoDL·5毛钱训练AI歌手**](https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI/wiki/Autodl%E8%AE%AD%E7%BB%83RVC%C2%B7AI%E6%AD%8C%E6%89%8B%E6%95%99%E7%A8%8B) | [**对照实验记录**](https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI/wiki/Autodl%E8%AE%AD%E7%BB%83RVC%C2%B7AI%E6%AD%8C%E6%89%8B%E6%95%99%E7%A8%8B](https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI/wiki/%E5%AF%B9%E7%85%A7%E5%AE%9E%E9%AA%8C%C2%B7%E5%AE%9E%E9%AA%8C%E8%AE%B0%E5%BD%95)) | [**在线演示**](https://modelscope.cn/studios/FlowerCry/RVCv2demo)
+[**更新日志**](./CHANGELOG.md) | [**常见问题解答**](https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI/wiki/%E5%B8%B8%E8%A7%81%E9%97%AE%E9%A2%98%E8%A7%A3%E7%AD%94) | [**开发指南**](./AGENTS.md) | [**进度跟踪**](./TODO.md) | [**Rust 实现状态**](./DONE.md)
 
 [**English**](./docs/en/README.en.md) | [**中文简体**](./README.md) | [**日本語**](./docs/jp/README.ja.md) | [**한국어**](./docs/kr/README.ko.md) ([**韓國語**](./docs/kr/README.ko.han.md)) | [**Français**](./docs/fr/README.fr.md) | [**Türkçe**](./docs/tr/README.tr.md) | [**Português**](./docs/pt/README.pt.md)
 
 </div>
 
 > 底模使用接近50小时的开源高质量VCTK训练集训练，无版权方面的顾虑，请大家放心使用
+
+> 🚀 **Rust 版本开发中**: 我们正在将 RVC 迁移到 Rust，以获得更好的性能、内存安全性和跨平台支持
 
 > 请期待RVCv3的底模，参数更大，数据更大，效果更好，基本持平的推理速度，需要训练数据量更少。
 
@@ -54,9 +57,53 @@
 + 使用最先进的[人声音高提取算法InterSpeech2023-RMVPE](#参考项目)根绝哑音问题。效果最好（显著地）但比crepe_full更快、资源占用更小
 + A卡I卡加速支持
 
+### 🦀 Rust 版本特性
++ **内存安全**: Rust 的所有权系统确保内存安全，避免常见的C/C++错误
++ **高性能**: 零成本抽象和编译时优化，接近C/C++的性能
++ **跨平台**: 统一的跨平台代码，支持 Windows、macOS、Linux
++ **现代异步**: 基于 tokio 的高效异步处理
++ **类型安全**: 编译时错误检查，减少运行时崩溃
++ **模块化设计**: 清晰的模块边界，便于维护和扩展
+
 点此查看我们的[演示视频](https://www.bilibili.com/video/BV1pm4y1z7Gm/) !
 
-## 环境配置
+## 🦀 Rust 版本快速开始
+
+### 系统要求
+- Rust 1.75+ 
+- 操作系统: Windows 10+, macOS 10.15+, Linux (Ubuntu 18.04+)
+
+### 安装和运行
+```bash
+# 克隆仓库
+git clone https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI.git
+cd Retrieval-based-Voice-Conversion-WebUI
+
+# 构建核心库 (当前为原型阶段)
+cd rvc-core
+cargo test  # 运行测试
+cargo check # 检查编译
+
+# 注意: Rust 版本当前处于开发阶段，完整功能即将推出
+```
+
+### Rust 版本开发状态
+- ✅ **核心架构**: 模块化设计完成
+- ✅ **配置管理**: JSON 配置系统
+- ✅ **错误处理**: 统一错误处理框架  
+- ✅ **音频处理**: 基础音频工具和处理管道
+- ✅ **F0 提取**: 多算法 F0 提取框架
+- ✅ **神经网络**: RVC 模型架构实现
+- ✅ **GUI 状态**: 事件驱动的状态管理
+- 🚧 **PyTorch 集成**: 正在开发中
+- 🚧 **Tauri 前端**: Vue.js 界面开发中
+- 🚧 **实时音频**: 音频设备集成开发中
+
+查看 [开发进度](./IN_PROGRESS.md) | [完成功能](./DONE.md) | [待实现功能](./TODO.md)
+
+---
+
+## Python 版本环境配置
 以下指令需在 Python 版本大于3.8的环境中执行。  
 
 ### Windows/Linux/MacOS等平台通用方法
@@ -206,6 +253,79 @@ source /opt/intel/oneapi/setvars.sh
 + [audio-slicer](https://github.com/openvpi/audio-slicer)
 + [Vocal pitch extraction:RMVPE](https://github.com/Dream-High/RMVPE)
   + The pretrained model is trained and tested by [yxlllc](https://github.com/yxlllc/RMVPE) and [RVC-Boss](https://github.com/RVC-Boss).
+
+## 项目架构
+
+### 目录结构
+```
+rvc-rs/
+├── rvc-core/           # 🦀 Rust 核心库
+│   ├── src/
+│   │   ├── lib.rs      # 主库导出
+│   │   ├── config.rs   # 配置管理
+│   │   ├── error.rs    # 错误处理
+│   │   ├── audio.rs    # 音频处理
+│   │   ├── f0.rs       # F0 提取
+│   │   ├── gui.rs      # GUI 状态管理
+│   │   ├── models.rs   # 神经网络模型
+│   │   ├── tensor.rs   # 张量操作 (当前为 mock)
+│   │   └── utils.rs    # 实用工具
+│   └── Cargo.toml      # Rust 依赖配置
+├── rvc-ui/             # 🖥️ Tauri + Vue.js 前端
+│   ├── src/            # Vue.js 前端代码
+│   └── src-tauri/      # Tauri Rust 后端
+├── AGENTS.md           # 🤖 开发指南和规范
+├── TODO.md             # 📋 待实现功能
+├── IN_PROGRESS.md      # 🚧 开发中功能
+├── DONE.md             # ✅ 已完成功能
+└── CHANGELOG.md        # 📝 版本更新记录
+```
+
+### 技术栈
+
+#### Rust 后端
+- **语言**: Rust 2021 Edition
+- **异步运行时**: Tokio
+- **深度学习**: tch (PyTorch Rust 绑定)
+- **音频处理**: hound, dasp
+- **序列化**: serde
+- **GUI 框架**: Tauri
+
+#### 前端
+- **框架**: Vue.js 3
+- **构建工具**: Vite  
+- **UI 库**: 待定
+- **状态管理**: Pinia
+
+## 贡献指南
+
+### Rust 版本贡献
+1. 阅读 [开发指南](./AGENTS.md)
+2. 查看 [当前进度](./IN_PROGRESS.md) 和 [待实现功能](./TODO.md)
+3. 遵循 Rust 编码规范
+4. 确保测试覆盖率 > 80%
+5. 更新相关文档
+
+### 开发工作流
+```bash
+# 1. Fork 并克隆仓库
+git clone https://github.com/YOUR_USERNAME/Retrieval-based-Voice-Conversion-WebUI.git
+
+# 2. 创建功能分支
+git checkout -b feature/your-feature-name
+
+# 3. 开发和测试
+cd rvc-core
+cargo test
+cargo fmt
+cargo clippy
+
+# 4. 提交更改
+git commit -m "feat: add your feature description"
+git push origin feature/your-feature-name
+
+# 5. 创建 Pull Request
+```
 
 ## 感谢所有贡献者作出的努力
 <a href="https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI/graphs/contributors" target="_blank">
