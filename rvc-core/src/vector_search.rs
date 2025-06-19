@@ -245,7 +245,7 @@ impl IVFIndex {
         }
 
         let max_iters = 100;
-        let tolerance = 1e-4;
+        let tolerance = 1e-4f64;
 
         for _iter in 0..max_iters {
             let mut new_centroids = Array2::zeros((k, n_features));
@@ -283,11 +283,11 @@ impl IVFIndex {
             }
 
             // 检查收敛
-            let mut max_change = 0.0_f64;
+            let mut max_change = 0.0f64;
             for i in 0..k {
                 for d in 0..n_features {
-                    let change: f32 = (new_centroids[[i, d]] - centroids[[i, d]]).abs();
-                    let change = change as f64;
+                    let change =
+                        (new_centroids[[i, d]] as f32 - centroids[[i, d]] as f32).abs() as f64;
                     if change > max_change {
                         max_change = change;
                     }

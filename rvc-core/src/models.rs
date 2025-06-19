@@ -5,7 +5,7 @@
 use crate::{Device, Kind, RvcError, RvcResult, Tensor};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// 模型配置信息
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -590,7 +590,11 @@ mod tests {
         let model_path = temp_dir.path().join("test_model.pt");
         model.save_to_file(&model_path)?;
 
-        manager.load_model("test_model".to_string(), &model_path, None::<&PathBuf>)?;
+        manager.load_model(
+            "test_model".to_string(),
+            &model_path,
+            None::<&std::path::PathBuf>,
+        )?;
 
         assert!(manager.get_model("test_model").is_some());
         assert_eq!(manager.list_models().len(), 1);
