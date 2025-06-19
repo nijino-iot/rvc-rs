@@ -9,7 +9,7 @@ use tauri::{Manager, State};
 use rvc_core::{
     config::{Config, ConfigManager},
     error::RvcError,
-    gui::{AppState, AudioDeviceInfo, DeviceManager, DeviceType, GuiManager},
+    gui::{AppState, AudioDeviceInfo, DeviceManager, GuiManager, RealTimeStats},
 };
 
 /// 应用状态管理 - 仅包含对 core 的引用
@@ -91,7 +91,7 @@ pub async fn reload_devices(
     host_api: Option<String>,
 ) -> Result<(), String> {
     info!("重新加载设备列表");
-    let gui_manager = state.gui_manager.lock().unwrap();
+    let mut gui_manager = state.gui_manager.lock().unwrap();
     gui_manager
         .update_audio_devices(host_api.as_deref())
         .await
@@ -136,7 +136,7 @@ pub async fn start_voice_conversion(state: State<'_, AppStateManager>) -> Result
     }
 
     // 开始转换
-    let gui_manager = state.gui_manager.lock().unwrap();
+    let mut gui_manager = state.gui_manager.lock().unwrap();
     gui_manager
         .start_voice_conversion()
         .await
@@ -146,7 +146,7 @@ pub async fn start_voice_conversion(state: State<'_, AppStateManager>) -> Result
 #[tauri::command]
 pub async fn stop_voice_conversion(state: State<'_, AppStateManager>) -> Result<(), String> {
     info!("停止语音转换");
-    let gui_manager = state.gui_manager.lock().unwrap();
+    let mut gui_manager = state.gui_manager.lock().unwrap();
     gui_manager
         .stop_voice_conversion()
         .await
@@ -163,6 +163,18 @@ pub fn update_parameter(
 ) -> Result<(), String> {
     info!("更新参数: {} = {:?}", name, value);
 
+    // 尝试实时参数更新
+    {
+        let mut gui_manager = state.gui_manager.lock().unwrap();
+        match gui_manager.update_realtime_parameter(&name, value.clone()) {
+            Ok(()) => return Ok(()),
+            Err(_) => {
+                // 如果实时更新失败，继续使用配置管理器更新
+            }
+        }
+    }
+
+    // 配置文件更新
     let mut config_manager = state.config_manager.lock().unwrap();
     config_manager
         .update_config(|config| {
@@ -244,18 +256,18 @@ pub fn update_parameter(
 pub fn get_realtime_status(state: State<AppStateManager>) -> HashMap<String, serde_json::Value> {
     let gui_manager = state.gui_manager.lock().unwrap();
     let stats = gui_manager.get_stats();
-    let state = gui_manager.get_state();
+    let app_state = gui_manager.get_state();
 
     let mut status = HashMap::new();
 
     // 添加状态信息
     status.insert(
         "app_state".to_string(),
-        serde_json::json!(format!("{:?}", state)),
+        serde_json::json!(format!("{:?}", app_state)),
     );
     status.insert(
         "is_converting".to_string(),
-        serde_json::json!(matches!(state, AppState::Converting)),
+        serde_json::json!(matches!(app_state, AppState::Converting)),
     );
 
     // 添加统计信息

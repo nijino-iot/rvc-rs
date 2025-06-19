@@ -19,13 +19,15 @@ pub mod utils;
 pub mod vector_search;
 pub mod world;
 
-// 重新导出主要类型和函数
-pub use audio::*;
-pub use audio_stream::*;
-pub use config::*;
+// 重新导出主要类型和函数（避免重复导出）
+pub use audio::printt;
+pub use audio_stream::{
+    AudioCallback, AudioDevice, AudioDeviceManager, AudioProcessor, AudioResampler, AudioStream,
+};
+pub use config::{Config, ConfigManager, GuiConfig};
 pub use error::*;
 pub use f0::*;
-pub use gui::*;
+pub use gui::{AppState, AudioDeviceInfo, DeviceManager, GuiManager, RealTimeStats};
 pub use models::*;
 pub use noise_suppression::*;
 pub use pytorch_loader::*;

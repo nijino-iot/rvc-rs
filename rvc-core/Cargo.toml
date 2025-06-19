@@ -44,6 +44,8 @@ rustfft = "6.2"
 nalgebra = "0.32"
 # 简单数学计算
 libm = "0.2"
+# 随机数生成
+rand = "0.8"
 
 [dev-dependencies]
 tempfile = "3.0"

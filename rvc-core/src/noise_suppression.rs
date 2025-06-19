@@ -2,7 +2,7 @@
 //!
 //! 提供简单的噪声门和降噪功能
 
-use crate::{RvcError, RvcResult};
+use crate::RvcResult;
 use realfft::{ComplexToReal, RealFftPlanner, RealToComplex};
 use rustfft::num_complex::Complex;
 use std::sync::Arc;
