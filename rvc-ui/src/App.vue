@@ -1,41 +1,488 @@
+<template>
+    <div class="rvc-app">
+        <header class="app-header">
+            <h1>RVC - 实时语音转换</h1>
+        </header>
+
+        <main class="app-main" :class="{ disabled: !appInitialized }">
+            <!-- 初始化状态 -->
+            <div v-if="!appInitialized" class="init-status">
+                <div v-if="!initializationError" class="loading">
+                    正在初始化应用...
+                </div>
+                <div v-else class="error">
+                    初始化失败: {{ initializationError }}
+                </div>
+            </div>
+
+            <!-- 主界面 -->
+            <template v-else>
+                <!-- 模型加载 -->
+                <section>
+                    <h2>加载模型</h2>
+                    <div class="form-group">
+                        <label>模型文件 (.pth)</label>
+                        <div class="file-input-group">
+                            <input
+                                type="text"
+                                v-model="formData.pth_path"
+                                placeholder="选择.pth文件"
+                                readonly
+                            />
+                            <button class="file-btn" @click="selectPthFile">
+                                选择文件
+                            </button>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label>Index文件 (.index)</label>
+                        <div class="file-input-group">
+                            <input
+                                type="text"
+                                v-model="formData.index_path"
+                                placeholder="选择.index文件"
+                                readonly
+                            />
+                            <button class="file-btn" @click="selectIndexFile">
+                                选择文件
+                            </button>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- 音频设备 -->
+                <section>
+                    <h2>音频设备</h2>
+                    <div class="form-group">
+                        <div class="form-row">
+                            <label>设备类型</label>
+                            <select
+                                v-model="formData.sg_hostapi"
+                                @change="handleHostApiChange"
+                            >
+                                <option
+                                    v-for="api in hostApis"
+                                    :key="api"
+                                    :value="api"
+                                >
+                                    {{ api }}
+                                </option>
+                            </select>
+                            <label class="checkbox-label">
+                                <input
+                                    type="checkbox"
+                                    v-model="formData.sg_wasapi_exclusive"
+                                    :disabled="
+                                        !formData.sg_hostapi.includes('WASAPI')
+                                    "
+                                />
+                                独占 WASAPI 设备
+                            </label>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label>输入设备</label>
+                        <select
+                            v-model="formData.sg_input_device"
+                            @change="handleDeviceChange"
+                        >
+                            <option
+                                v-for="device in inputDevices"
+                                :key="device.id"
+                                :value="device.name"
+                            >
+                                {{ device.name }}
+                            </option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>输出设备</label>
+                        <select
+                            v-model="formData.sg_output_device"
+                            @change="handleDeviceChange"
+                        >
+                            <option
+                                v-for="device in outputDevices"
+                                :key="device.id"
+                                :value="device.name"
+                            >
+                                {{ device.name }}
+                            </option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <button class="reload-btn" @click="reloadDevices">
+                            重载设备列表
+                        </button>
+                        <div class="radio-group">
+                            <label>
+                                <input
+                                    type="radio"
+                                    v-model="formData.sr_type"
+                                    value="sr_model"
+                                    @change="
+                                        handleParameterChange(
+                                            'sr_type',
+                                            formData.sr_type,
+                                        )
+                                    "
+                                />
+                                使用模型采样率
+                            </label>
+                            <label>
+                                <input
+                                    type="radio"
+                                    v-model="formData.sr_type"
+                                    value="sr_device"
+                                    @change="
+                                        handleParameterChange(
+                                            'sr_type',
+                                            formData.sr_type,
+                                        )
+                                    "
+                                />
+                                使用设备采样率
+                            </label>
+                        </div>
+                        <span>采样率: {{ srStream || "未知" }}</span>
+                    </div>
+                </section>
+
+                <!-- 常规设置 -->
+                <section>
+                    <h2>常规设置</h2>
+                    <div class="settings-row">
+                        <div class="slider-group">
+                            <label>响应阈值: {{ formData.threshold }}</label>
+                            <input
+                                type="range"
+                                v-model="formData.threshold"
+                                min="-60"
+                                max="0"
+                                @input="
+                                    handleParameterChange(
+                                        'threshold',
+                                        formData.threshold,
+                                    )
+                                "
+                            />
+                        </div>
+                        <div class="slider-group">
+                            <label>音调设置: {{ formData.pitch }}</label>
+                            <input
+                                type="range"
+                                v-model="formData.pitch"
+                                min="-16"
+                                max="16"
+                                @input="
+                                    handleParameterChange(
+                                        'pitch',
+                                        formData.pitch,
+                                    )
+                                "
+                            />
+                        </div>
+                        <div class="slider-group">
+                            <label
+                                >性别因子/声线粗细:
+                                {{ formData.formant.toFixed(2) }}</label
+                            >
+                            <input
+                                type="range"
+                                v-model="formData.formant"
+                                min="-2"
+                                max="2"
+                                step="0.05"
+                                @input="
+                                    handleParameterChange(
+                                        'formant',
+                                        formData.formant,
+                                    )
+                                "
+                            />
+                        </div>
+                        <div class="slider-group">
+                            <label
+                                >Index Rate:
+                                {{ formData.index_rate.toFixed(2) }}</label
+                            >
+                            <input
+                                type="range"
+                                v-model="formData.index_rate"
+                                min="0"
+                                max="1"
+                                step="0.01"
+                                @input="
+                                    handleParameterChange(
+                                        'index_rate',
+                                        formData.index_rate,
+                                    )
+                                "
+                            />
+                        </div>
+                        <div class="slider-group">
+                            <label
+                                >响度因子:
+                                {{ formData.rms_mix_rate.toFixed(2) }}</label
+                            >
+                            <input
+                                type="range"
+                                v-model="formData.rms_mix_rate"
+                                min="0"
+                                max="1"
+                                step="0.01"
+                                @input="
+                                    handleParameterChange(
+                                        'rms_mix_rate',
+                                        formData.rms_mix_rate,
+                                    )
+                                "
+                            />
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label>音高算法</label>
+                        <div class="radio-group">
+                            <label
+                                v-for="method in [
+                                    'pm',
+                                    'harvest',
+                                    'crepe',
+                                    'rmvpe',
+                                    'fcpe',
+                                ]"
+                                :key="method"
+                            >
+                                <input
+                                    type="radio"
+                                    v-model="formData.f0method"
+                                    :value="method"
+                                    @change="
+                                        handleParameterChange(
+                                            'f0method',
+                                            formData.f0method,
+                                        )
+                                    "
+                                />
+                                {{ method.toUpperCase() }}
+                            </label>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- 性能设置 -->
+                <section>
+                    <h2>性能设置</h2>
+                    <div class="settings-row">
+                        <div class="slider-group">
+                            <label
+                                >采样长度:
+                                {{ formData.block_time.toFixed(2) }}s</label
+                            >
+                            <input
+                                type="range"
+                                v-model="formData.block_time"
+                                min="0.02"
+                                max="1.5"
+                                step="0.01"
+                                @change="
+                                    handleParameterChange(
+                                        'block_time',
+                                        formData.block_time,
+                                    )
+                                "
+                            />
+                        </div>
+                        <div class="slider-group">
+                            <label>harvest进程数: {{ formData.n_cpu }}</label>
+                            <input
+                                type="range"
+                                v-model="formData.n_cpu"
+                                min="1"
+                                max="8"
+                                @change="
+                                    handleParameterChange(
+                                        'n_cpu',
+                                        formData.n_cpu,
+                                    )
+                                "
+                            />
+                        </div>
+                        <div class="slider-group">
+                            <label
+                                >淡入淡出长度:
+                                {{ formData.crossfade_time.toFixed(2) }}s</label
+                            >
+                            <input
+                                type="range"
+                                v-model="formData.crossfade_time"
+                                min="0.01"
+                                max="0.15"
+                                step="0.01"
+                                @change="
+                                    handleParameterChange(
+                                        'crossfade_time',
+                                        formData.crossfade_time,
+                                    )
+                                "
+                            />
+                        </div>
+                        <div class="slider-group">
+                            <label
+                                >额外推理时长:
+                                {{ formData.extra_time.toFixed(2) }}s</label
+                            >
+                            <input
+                                type="range"
+                                v-model="formData.extra_time"
+                                min="0.05"
+                                max="5.00"
+                                step="0.01"
+                                @change="
+                                    handleParameterChange(
+                                        'extra_time',
+                                        formData.extra_time,
+                                    )
+                                "
+                            />
+                        </div>
+                    </div>
+
+                    <div class="checkbox-group">
+                        <label>
+                            <input
+                                type="checkbox"
+                                v-model="formData.i_noise_reduce"
+                                @change="
+                                    handleParameterChange(
+                                        'i_noise_reduce',
+                                        formData.i_noise_reduce,
+                                    )
+                                "
+                            />
+                            输入降噪
+                        </label>
+                        <label>
+                            <input
+                                type="checkbox"
+                                v-model="formData.o_noise_reduce"
+                                @change="
+                                    handleParameterChange(
+                                        'o_noise_reduce',
+                                        formData.o_noise_reduce,
+                                    )
+                                "
+                            />
+                            输出降噪
+                        </label>
+                        <label>
+                            <input
+                                type="checkbox"
+                                v-model="formData.use_pv"
+                                @change="
+                                    handleParameterChange(
+                                        'use_pv',
+                                        formData.use_pv,
+                                    )
+                                "
+                            />
+                            启用相位声码器
+                        </label>
+                    </div>
+                </section>
+
+                <!-- 控制按钮 -->
+                <section class="control-section">
+                    <div class="control-buttons">
+                        <button
+                            class="start-btn"
+                            @click="startVoiceConversion"
+                            :disabled="isConverting"
+                        >
+                            开始音频转换
+                        </button>
+                        <button
+                            class="stop-btn"
+                            @click="stopVoiceConversion"
+                            :disabled="!isConverting"
+                        >
+                            停止音频转换
+                        </button>
+                    </div>
+
+                    <div class="function-selection">
+                        <label>
+                            <input
+                                type="radio"
+                                v-model="functionMode"
+                                value="im"
+                            />
+                            输入监听
+                        </label>
+                        <label>
+                            <input
+                                type="radio"
+                                v-model="functionMode"
+                                value="vc"
+                            />
+                            输出变声
+                        </label>
+                    </div>
+
+                    <div class="status-info">
+                        <div class="status-item">
+                            <span>算法延迟(ms):</span>
+                            <span
+                                class="status-value"
+                                :class="{ active: isConverting }"
+                            >
+                                {{ delayTime }}
+                            </span>
+                        </div>
+                        <div class="status-item">
+                            <span>推理时间(ms):</span>
+                            <span
+                                class="status-value"
+                                :class="{ active: isConverting }"
+                            >
+                                {{ inferTime }}
+                            </span>
+                        </div>
+                    </div>
+                </section>
+            </template>
+        </main>
+    </div>
+</template>
+
 <script setup>
 import { ref, reactive, onMounted, onUnmounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-dialog";
 
-// 响应式数据
+// 表单数据
 const formData = reactive({
-    // 模型路径
-    pthPath: "",
-    indexPath: "",
-
-    // 音频设备
-    hostApi: "",
-    wasapiExclusive: false,
-    inputDevice: "",
-    outputDevice: "",
-    srModel: true,
-    srDevice: false,
-
-    // 常规设置
-    threshold: -60,
+    pth_path: "",
+    index_path: "",
     pitch: 0,
     formant: 0.0,
-    indexRate: 0,
-    rmsMixRate: 0,
-    f0Method: "fcpe", // pm, harvest, crepe, rmvpe, fcpe
-
-    // 性能设置
-    blockTime: 0.25,
-    nCpu: 1,
-    crossfadeLength: 0.05,
-    extraTime: 2.5,
-    inputNoiseReduce: false,
-    outputNoiseReduce: false,
-    usePv: false,
-
-    // 功能选择
-    inputMonitor: false,
-    outputVoiceChange: true,
+    sr_type: "sr_model",
+    block_time: 0.25,
+    threshold: -60,
+    crossfade_time: 0.05,
+    extra_time: 2.5,
+    i_noise_reduce: false,
+    o_noise_reduce: false,
+    use_pv: false,
+    rms_mix_rate: 0.0,
+    index_rate: 0.0,
+    n_cpu: 4,
+    f0method: "fcpe",
+    sg_hostapi: "",
+    sg_wasapi_exclusive: false,
+    sg_input_device: "",
+    sg_output_device: "",
 });
 
 // 设备列表
@@ -45,146 +492,172 @@ const outputDevices = ref([]);
 
 // 状态信息
 const srStream = ref("");
-const delayTime = ref("0");
-const inferTime = ref("0");
+const delayTime = ref(0);
+const inferTime = ref(0);
 const isConverting = ref(false);
 const appInitialized = ref(false);
 const initializationError = ref("");
+const functionMode = ref("vc");
 
 // 实时状态
-const realtimeStatus = reactive({
-    algorithmLatency: 0,
-    inferenceTime: 0,
-    bufferUsage: 0,
-    cpuUsage: 0,
-    gpuUsage: null,
-    isConverting: false,
-});
-
-// 状态监控定时器
 let statusTimer = null;
 
 // 加载设备列表
-const loadDevices = async () => {
+const loadDevices = async (hostApi = null) => {
     try {
-        const result = await invoke("get_audio_devices");
-        hostApis.value = result.hostapis || [];
-        inputDevices.value = result.input_devices || [];
-        outputDevices.value = result.output_devices || [];
+        const inputs = await invoke("list_input_devices", { hostApi });
+        const outputs = await invoke("list_output_devices", { hostApi });
+        inputDevices.value = inputs;
+        outputDevices.value = outputs;
     } catch (error) {
-        console.error("加载设备列表失败:", error);
+        console.error("加载设备失败:", error);
     }
 };
 
-// 重载设备列表
+// 重载设备
 const reloadDevices = async () => {
-    console.log("重载设备列表");
-    await invoke("reload_devices");
-    await loadDevices();
+    try {
+        await invoke("reload_devices", {
+            hostApi: formData.sg_hostapi || null,
+        });
+        await loadDevices(formData.sg_hostapi);
+    } catch (error) {
+        console.error("重载设备失败:", error);
+    }
 };
 
-// 选择 PTH 文件
+// 选择 pth 文件
 const selectPthFile = async () => {
     try {
-        const result = await invoke("select_pth_file");
-        if (result) {
-            formData.pthPath = result;
+        const selected = await open({
+            multiple: false,
+            filters: [
+                {
+                    name: "PyTorch Model",
+                    extensions: ["pth"],
+                },
+            ],
+        });
+        if (selected) {
+            formData.pth_path = selected;
         }
     } catch (error) {
-        console.error("选择 PTH 文件失败:", error);
+        console.error("选择文件失败:", error);
     }
 };
 
-// 选择 Index 文件
+// 选择 index 文件
 const selectIndexFile = async () => {
     try {
-        const result = await invoke("select_index_file");
-        if (result) {
-            formData.indexPath = result;
+        const selected = await open({
+            multiple: false,
+            filters: [
+                {
+                    name: "Index File",
+                    extensions: ["index"],
+                },
+            ],
+        });
+        if (selected) {
+            formData.index_path = selected;
         }
     } catch (error) {
-        console.error("选择 Index 文件失败:", error);
+        console.error("选择文件失败:", error);
     }
 };
 
-// 开始音频转换
+// 开始语音转换
 const startVoiceConversion = async () => {
-    console.log("开始音频转换", formData);
-
-    // 验证配置
     try {
-        const isValid = await invoke("validate_config", { config: formData });
-        if (!isValid) {
-            alert("配置验证失败，请检查模型文件路径和设备配置");
-            return;
-        }
-    } catch (error) {
-        console.error("配置验证失败:", error);
-        alert(`配置验证失败: ${error}`);
-        return;
-    }
+        // 保存配置
+        await invoke("save_config", { config: formData });
 
-    try {
-        await invoke("start_voice_conversion", { config: formData });
-        console.log("语音转换已启动");
+        // 开始转换
+        await invoke("start_voice_conversion");
+        isConverting.value = true;
+
+        // 开始监控状态
+        startStatusMonitoring();
     } catch (error) {
-        console.error("开始音频转换失败:", error);
-        alert(`启动失败: ${error}`);
+        console.error("开始转换失败:", error);
+        alert(`开始转换失败: ${error}`);
     }
 };
 
-// 停止音频转换
 // 停止语音转换
 const stopVoiceConversion = async () => {
-    console.log("停止语音转换");
     try {
         await invoke("stop_voice_conversion");
-        console.log("语音转换已停止");
+        isConverting.value = false;
+
+        // 停止监控
+        stopStatusMonitoring();
     } catch (error) {
-        console.error("停止音频转换失败:", error);
-        alert(`停止失败: ${error}`);
+        console.error("停止转换失败:", error);
+    }
+};
+
+// 处理主机API变化
+const handleHostApiChange = async () => {
+    await loadDevices(formData.sg_hostapi);
+    if (
+        inputDevices.value.length > 0 &&
+        !inputDevices.value.find((d) => d.name === formData.sg_input_device)
+    ) {
+        formData.sg_input_device = inputDevices.value[0].name;
+    }
+    if (
+        outputDevices.value.length > 0 &&
+        !outputDevices.value.find((d) => d.name === formData.sg_output_device)
+    ) {
+        formData.sg_output_device = outputDevices.value[0].name;
     }
 };
 
 // 处理设备变化
 const handleDeviceChange = async () => {
-    console.log("设备配置变化", {
-        hostApi: formData.hostApi,
-        inputDevice: formData.inputDevice,
-        outputDevice: formData.outputDevice,
-    });
-    await invoke("update_device_config", {
-        hostApi: formData.hostApi,
-        inputDevice: formData.inputDevice,
-        outputDevice: formData.outputDevice,
-        wasapiExclusive: formData.wasapiExclusive,
-    });
+    // TODO: 更新采样率显示
+    if (formData.sr_type === "sr_device" && formData.sg_output_device) {
+        try {
+            const samplerate = await invoke("get_device_samplerate", {
+                deviceName: formData.sg_output_device,
+            });
+            srStream.value = samplerate.toString();
+        } catch (error) {
+            console.error("获取采样率失败:", error);
+        }
+    }
 };
 
 // 处理参数变化
-const handleParameterChange = (param, value) => {
-    console.log(`参数变化: ${param} = ${value}`);
-    invoke("update_parameter", { param, value });
+const handleParameterChange = async (name, value) => {
+    try {
+        await invoke("update_parameter", { name, value });
+    } catch (error) {
+        console.error("更新参数失败:", error);
+    }
 };
 
 // 初始化应用
 const initializeApp = async () => {
     try {
-        console.log("初始化 RVC 应用...");
+        // 初始化后端
         await invoke("initialize_app");
-        appInitialized.value = true;
-        initializationError.value = "";
-        console.log("应用初始化成功");
+
+        // 加载主机API列表
+        hostApis.value = await invoke("list_host_apis");
+
+        // 加载配置
+        const config = await invoke("load_config");
+        Object.assign(formData, config);
 
         // 加载设备列表
-        await loadDevices();
+        await loadDevices(formData.sg_hostapi);
 
-        // 开始状态监控
-        startStatusMonitoring();
+        appInitialized.value = true;
     } catch (error) {
-        console.error("应用初始化失败:", error);
-        initializationError.value = `初始化失败: ${error}`;
-        appInitialized.value = false;
+        console.error("初始化失败:", error);
+        initializationError.value = error.toString();
     }
 };
 
@@ -193,14 +666,14 @@ const startStatusMonitoring = () => {
     statusTimer = setInterval(async () => {
         try {
             const status = await invoke("get_realtime_status");
-            Object.assign(realtimeStatus, status);
-
-            // 更新界面显示
-            delayTime.value = status.algorithmLatency.toFixed(1);
-            inferTime.value = status.inferenceTime.toFixed(1);
-            isConverting.value = status.isConverting;
+            if (status.delay_time !== undefined) {
+                delayTime.value = status.delay_time;
+            }
+            if (status.infer_time !== undefined) {
+                inferTime.value = status.infer_time;
+            }
         } catch (error) {
-            console.error("获取实时状态失败:", error);
+            console.error("获取状态失败:", error);
         }
     }, 100); // 每100ms更新一次
 };
@@ -213,6 +686,7 @@ const stopStatusMonitoring = () => {
     }
 };
 
+// 生命周期
 onMounted(() => {
     initializeApp();
 });
@@ -222,509 +696,13 @@ onUnmounted(() => {
 });
 </script>
 
-<template>
-    <div class="rvc-app">
-        <header class="app-header">
-            <h1>RVC - 实时语音转换</h1>
-            <div v-if="!appInitialized" class="init-status">
-                <div v-if="initializationError" class="error">
-                    {{ initializationError }}
-                </div>
-                <div v-else class="loading">正在初始化应用...</div>
-            </div>
-        </header>
-
-        <main class="app-main" :class="{ disabled: !appInitialized }">
-            <!-- 模型加载区域 -->
-            <section class="model-section">
-                <h2>加载模型</h2>
-                <div class="form-group">
-                    <label>选择.pth文件:</label>
-                    <div class="file-input-group">
-                        <input
-                            v-model="formData.pthPath"
-                            type="text"
-                            placeholder="请选择.pth文件"
-                            readonly
-                        />
-                        <button @click="selectPthFile" class="file-btn">
-                            浏览
-                        </button>
-                    </div>
-                </div>
-                <div class="form-group">
-                    <label>选择.index文件:</label>
-                    <div class="file-input-group">
-                        <input
-                            v-model="formData.indexPath"
-                            type="text"
-                            placeholder="请选择.index文件"
-                            readonly
-                        />
-                        <button @click="selectIndexFile" class="file-btn">
-                            浏览
-                        </button>
-                    </div>
-                </div>
-            </section>
-
-            <!-- 音频设备区域 -->
-            <section class="device-section">
-                <h2>音频设备</h2>
-                <div class="form-row">
-                    <div class="form-group">
-                        <label>设备类型:</label>
-                        <select
-                            v-model="formData.hostApi"
-                            @change="handleDeviceChange"
-                        >
-                            <option
-                                v-for="api in hostApis"
-                                :key="api"
-                                :value="api"
-                            >
-                                {{ api }}
-                            </option>
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label>
-                            <input
-                                v-model="formData.wasapiExclusive"
-                                type="checkbox"
-                                @change="handleDeviceChange"
-                            />
-                            独占 WASAPI 设备
-                        </label>
-                    </div>
-                </div>
-
-                <div class="form-group">
-                    <label>输入设备:</label>
-                    <select
-                        v-model="formData.inputDevice"
-                        @change="handleDeviceChange"
-                    >
-                        <option
-                            v-for="device in inputDevices"
-                            :key="device"
-                            :value="device"
-                        >
-                            {{ device }}
-                        </option>
-                    </select>
-                </div>
-
-                <div class="form-group">
-                    <label>输出设备:</label>
-                    <select
-                        v-model="formData.outputDevice"
-                        @change="handleDeviceChange"
-                    >
-                        <option
-                            v-for="device in outputDevices"
-                            :key="device"
-                            :value="device"
-                        >
-                            {{ device }}
-                        </option>
-                    </select>
-                </div>
-
-                <div class="form-row">
-                    <button @click="reloadDevices" class="reload-btn">
-                        重载设备列表
-                    </button>
-                    <div class="radio-group">
-                        <label>
-                            <input
-                                v-model="formData.srModel"
-                                type="radio"
-                                name="srType"
-                                :value="true"
-                                @change="formData.srDevice = false"
-                            />
-                            使用模型采样率
-                        </label>
-                        <label>
-                            <input
-                                v-model="formData.srDevice"
-                                type="radio"
-                                name="srType"
-                                :value="true"
-                                @change="formData.srModel = false"
-                            />
-                            使用设备采样率
-                        </label>
-                    </div>
-                    <span>采样率: {{ srStream }}</span>
-                </div>
-            </section>
-
-            <div class="settings-row">
-                <!-- 常规设置 -->
-                <section class="general-settings">
-                    <h2>常规设置</h2>
-
-                    <div class="slider-group">
-                        <label>响应阈值: {{ formData.threshold }}</label>
-                        <input
-                            v-model="formData.threshold"
-                            type="range"
-                            min="-60"
-                            max="0"
-                            step="1"
-                            @input="
-                                handleParameterChange(
-                                    'threshold',
-                                    formData.threshold,
-                                )
-                            "
-                        />
-                    </div>
-
-                    <div class="slider-group">
-                        <label>音调设置: {{ formData.pitch }}</label>
-                        <input
-                            v-model="formData.pitch"
-                            type="range"
-                            min="-16"
-                            max="16"
-                            step="1"
-                            @input="
-                                handleParameterChange('pitch', formData.pitch)
-                            "
-                        />
-                    </div>
-
-                    <div class="slider-group">
-                        <label>性别因子/声线粗细: {{ formData.formant }}</label>
-                        <input
-                            v-model="formData.formant"
-                            type="range"
-                            min="-2"
-                            max="2"
-                            step="0.05"
-                            @input="
-                                handleParameterChange(
-                                    'formant',
-                                    formData.formant,
-                                )
-                            "
-                        />
-                    </div>
-
-                    <div class="slider-group">
-                        <label>Index Rate: {{ formData.indexRate }}</label>
-                        <input
-                            v-model="formData.indexRate"
-                            type="range"
-                            min="0"
-                            max="1"
-                            step="0.01"
-                            @input="
-                                handleParameterChange(
-                                    'indexRate',
-                                    formData.indexRate,
-                                )
-                            "
-                        />
-                    </div>
-
-                    <div class="slider-group">
-                        <label>响度因子: {{ formData.rmsMixRate }}</label>
-                        <input
-                            v-model="formData.rmsMixRate"
-                            type="range"
-                            min="0"
-                            max="1"
-                            step="0.01"
-                            @input="
-                                handleParameterChange(
-                                    'rmsMixRate',
-                                    formData.rmsMixRate,
-                                )
-                            "
-                        />
-                    </div>
-
-                    <div class="form-group">
-                        <label>音高算法:</label>
-                        <div class="radio-group">
-                            <label
-                                ><input
-                                    v-model="formData.f0Method"
-                                    type="radio"
-                                    value="pm"
-                                    @change="
-                                        handleParameterChange('f0Method', 'pm')
-                                    "
-                                />pm</label
-                            >
-                            <label
-                                ><input
-                                    v-model="formData.f0Method"
-                                    type="radio"
-                                    value="harvest"
-                                    @change="
-                                        handleParameterChange(
-                                            'f0Method',
-                                            'harvest',
-                                        )
-                                    "
-                                />harvest</label
-                            >
-                            <label
-                                ><input
-                                    v-model="formData.f0Method"
-                                    type="radio"
-                                    value="crepe"
-                                    @change="
-                                        handleParameterChange(
-                                            'f0Method',
-                                            'crepe',
-                                        )
-                                    "
-                                />crepe</label
-                            >
-                            <label
-                                ><input
-                                    v-model="formData.f0Method"
-                                    type="radio"
-                                    value="rmvpe"
-                                    @change="
-                                        handleParameterChange(
-                                            'f0Method',
-                                            'rmvpe',
-                                        )
-                                    "
-                                />rmvpe</label
-                            >
-                            <label
-                                ><input
-                                    v-model="formData.f0Method"
-                                    type="radio"
-                                    value="fcpe"
-                                    @change="
-                                        handleParameterChange(
-                                            'f0Method',
-                                            'fcpe',
-                                        )
-                                    "
-                                />fcpe</label
-                            >
-                        </div>
-                    </div>
-                </section>
-
-                <!-- 性能设置 -->
-                <section class="performance-settings">
-                    <h2>性能设置</h2>
-
-                    <div class="slider-group">
-                        <label>采样长度: {{ formData.blockTime }}</label>
-                        <input
-                            v-model="formData.blockTime"
-                            type="range"
-                            min="0.02"
-                            max="1.5"
-                            step="0.01"
-                            @input="
-                                handleParameterChange(
-                                    'blockTime',
-                                    formData.blockTime,
-                                )
-                            "
-                        />
-                    </div>
-
-                    <div class="slider-group">
-                        <label>harvest进程数: {{ formData.nCpu }}</label>
-                        <input
-                            v-model="formData.nCpu"
-                            type="range"
-                            min="1"
-                            max="8"
-                            step="1"
-                            @input="
-                                handleParameterChange('nCpu', formData.nCpu)
-                            "
-                        />
-                    </div>
-
-                    <div class="slider-group">
-                        <label
-                            >淡入淡出长度: {{ formData.crossfadeLength }}</label
-                        >
-                        <input
-                            v-model="formData.crossfadeLength"
-                            type="range"
-                            min="0.01"
-                            max="0.15"
-                            step="0.01"
-                            @input="
-                                handleParameterChange(
-                                    'crossfadeLength',
-                                    formData.crossfadeLength,
-                                )
-                            "
-                        />
-                    </div>
-
-                    <div class="slider-group">
-                        <label>额外推理时长: {{ formData.extraTime }}</label>
-                        <input
-                            v-model="formData.extraTime"
-                            type="range"
-                            min="0.05"
-                            max="5.00"
-                            step="0.01"
-                            @input="
-                                handleParameterChange(
-                                    'extraTime',
-                                    formData.extraTime,
-                                )
-                            "
-                        />
-                    </div>
-
-                    <div class="checkbox-group">
-                        <label>
-                            <input
-                                v-model="formData.inputNoiseReduce"
-                                type="checkbox"
-                                @change="
-                                    handleParameterChange(
-                                        'inputNoiseReduce',
-                                        formData.inputNoiseReduce,
-                                    )
-                                "
-                            />
-                            输入降噪
-                        </label>
-                        <label>
-                            <input
-                                v-model="formData.outputNoiseReduce"
-                                type="checkbox"
-                                @change="
-                                    handleParameterChange(
-                                        'outputNoiseReduce',
-                                        formData.outputNoiseReduce,
-                                    )
-                                "
-                            />
-                            输出降噪
-                        </label>
-                        <label>
-                            <input
-                                v-model="formData.usePv"
-                                type="checkbox"
-                                @change="
-                                    handleParameterChange(
-                                        'usePv',
-                                        formData.usePv,
-                                    )
-                                "
-                            />
-                            启用相位声码器
-                        </label>
-                    </div>
-                </section>
-            </div>
-
-            <!-- 控制区域 -->
-            <section class="control-section">
-                <div class="control-buttons">
-                    <button
-                        @click="startVoiceConversion"
-                        :disabled="isConverting"
-                        class="start-btn"
-                    >
-                        开始音频转换
-                    </button>
-                    <button
-                        @click="stopVoiceConversion"
-                        :disabled="!isConverting"
-                        class="stop-btn"
-                    >
-                        停止音频转换
-                    </button>
-                </div>
-
-                <div class="function-selection">
-                    <label>
-                        <input
-                            v-model="formData.inputMonitor"
-                            type="radio"
-                            name="function"
-                            :value="true"
-                            @change="formData.outputVoiceChange = false"
-                        />
-                        输入监听
-                    </label>
-                    <label>
-                        <input
-                            v-model="formData.outputVoiceChange"
-                            type="radio"
-                            name="function"
-                            :value="true"
-                            @change="formData.inputMonitor = false"
-                        />
-                        输出变声
-                    </label>
-                </div>
-
-                <div class="status-info">
-                    <div class="status-item">
-                        <span>算法延迟(ms):</span>
-                        <span class="status-value">{{ delayTime }}</span>
-                    </div>
-                    <div class="status-item">
-                        <span>推理时间(ms):</span>
-                        <span class="status-value">{{ inferTime }}</span>
-                    </div>
-                    <div class="status-item">
-                        <span>缓冲区使用率:</span>
-                        <span class="status-value"
-                            >{{ realtimeStatus.bufferUsage.toFixed(1) }}%</span
-                        >
-                    </div>
-                    <div class="status-item">
-                        <span>CPU使用率:</span>
-                        <span class="status-value"
-                            >{{ realtimeStatus.cpuUsage.toFixed(1) }}%</span
-                        >
-                    </div>
-                    <div
-                        class="status-item"
-                        v-if="realtimeStatus.gpuUsage !== null"
-                    >
-                        <span>GPU使用率:</span>
-                        <span class="status-value"
-                            >{{ realtimeStatus.gpuUsage.toFixed(1) }}%</span
-                        >
-                    </div>
-                    <div class="status-item">
-                        <span>转换状态:</span>
-                        <span
-                            class="status-value"
-                            :class="{ active: isConverting }"
-                        >
-                            {{ isConverting ? "运行中" : "空闲" }}
-                        </span>
-                    </div>
-                </div>
-            </section>
-        </main>
-    </div>
-</template>
-
 <style scoped>
 .rvc-app {
     max-width: 1200px;
     margin: 0 auto;
     padding: 20px;
-    font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+    font-family:
+        -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
 }
 
 .app-header {
@@ -733,8 +711,8 @@ onUnmounted(() => {
 }
 
 .app-header h1 {
-    color: #2c3e50;
-    margin: 0;
+    font-size: 2em;
+    color: #333;
 }
 
 .app-main {
@@ -744,7 +722,7 @@ onUnmounted(() => {
 }
 
 section {
-    background: white;
+    background: #f5f5f5;
     border-radius: 8px;
     padding: 20px;
     box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
@@ -752,10 +730,10 @@ section {
 
 section h2 {
     margin: 0 0 15px 0;
-    color: #34495e;
-    font-size: 1.2em;
-    border-bottom: 2px solid #3498db;
-    padding-bottom: 5px;
+    font-size: 1.3em;
+    color: #444;
+    border-bottom: 2px solid #e0e0e0;
+    padding-bottom: 10px;
 }
 
 .form-group {
@@ -764,8 +742,8 @@ section h2 {
 
 .form-row {
     display: flex;
-    gap: 20px;
     align-items: center;
+    gap: 15px;
     flex-wrap: wrap;
 }
 
@@ -773,7 +751,7 @@ section h2 {
     display: block;
     margin-bottom: 5px;
     font-weight: 500;
-    color: #2c3e50;
+    color: #555;
 }
 
 .file-input-group {
@@ -792,34 +770,36 @@ select {
     border: 1px solid #ddd;
     border-radius: 4px;
     font-size: 14px;
+    background: white;
 }
 
 input[type="text"]:focus,
 select:focus {
     outline: none;
-    border-color: #3498db;
-    box-shadow: 0 0 0 2px rgba(52, 152, 219, 0.2);
+    border-color: #4caf50;
+    box-shadow: 0 0 0 2px rgba(76, 175, 80, 0.2);
 }
 
 .file-btn,
 .reload-btn {
     padding: 8px 16px;
-    background: #3498db;
+    background: #4caf50;
     color: white;
     border: none;
     border-radius: 4px;
     cursor: pointer;
     font-size: 14px;
+    white-space: nowrap;
 }
 
 .file-btn:hover,
 .reload-btn:hover {
-    background: #2980b9;
+    background: #45a049;
 }
 
 .settings-row {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
     gap: 20px;
 }
 
@@ -830,13 +810,13 @@ select:focus {
 .slider-group label {
     display: block;
     margin-bottom: 5px;
-    font-weight: 500;
-    color: #2c3e50;
+    font-size: 14px;
+    color: #555;
 }
 
 input[type="range"] {
     width: 100%;
-    margin: 5px 0;
+    margin-top: 5px;
 }
 
 .radio-group {
@@ -845,33 +825,34 @@ input[type="range"] {
     flex-wrap: wrap;
 }
 
-.radio-group label {
+.radio-group label,
+.checkbox-label {
     display: flex;
     align-items: center;
     gap: 5px;
-    margin-bottom: 0;
-    font-weight: normal;
     cursor: pointer;
+    font-size: 14px;
+    color: #555;
 }
 
 .checkbox-group {
     display: flex;
-    flex-direction: column;
-    gap: 10px;
+    gap: 20px;
+    flex-wrap: wrap;
 }
 
 .checkbox-group label {
     display: flex;
     align-items: center;
-    gap: 8px;
-    margin-bottom: 0;
-    font-weight: normal;
+    gap: 5px;
     cursor: pointer;
+    font-size: 14px;
+    color: #555;
 }
 
 .control-section {
-    background: #f8f9fa;
-    border: 2px solid #e9ecef;
+    background: #f9f9f9;
+    border: 2px solid #e0e0e0;
 }
 
 .control-buttons {
@@ -882,104 +863,101 @@ input[type="range"] {
 
 .start-btn,
 .stop-btn {
+    flex: 1;
     padding: 12px 24px;
-    border: none;
-    border-radius: 6px;
     font-size: 16px;
     font-weight: 500;
+    border: none;
+    border-radius: 4px;
     cursor: pointer;
-    transition: all 0.3s ease;
+    transition: background-color 0.3s;
 }
 
 .start-btn {
-    background: #27ae60;
+    background: #4caf50;
     color: white;
 }
 
 .start-btn:hover:not(:disabled) {
-    background: #229954;
+    background: #45a049;
 }
 
 .stop-btn {
-    background: #e74c3c;
+    background: #f44336;
     color: white;
 }
 
 .stop-btn:hover:not(:disabled) {
-    background: #c0392b;
+    background: #da190b;
 }
 
 .start-btn:disabled,
 .stop-btn:disabled {
-    background: #bdc3c7;
+    opacity: 0.5;
     cursor: not-allowed;
 }
 
 .function-selection {
     display: flex;
     gap: 20px;
-    margin-bottom: 15px;
+    margin-bottom: 20px;
 }
 
 .function-selection label {
     display: flex;
     align-items: center;
-    gap: 8px;
-    font-weight: 500;
-    cursor: pointer;
+    gap: 5px;
+    font-size: 14px;
+    color: #555;
 }
 
 .status-info {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-    gap: 15px;
-    color: #7f8c8d;
-    font-size: 14px;
+    display: flex;
+    gap: 30px;
     padding: 15px;
-    background-color: #f8f9fa;
-    border-radius: 8px;
-    border: 1px solid #e9ecef;
+    background: white;
+    border-radius: 4px;
+    border: 1px solid #e0e0e0;
 }
 
 .status-item {
     display: flex;
-    justify-content: space-between;
     align-items: center;
-    padding: 5px 0;
+    gap: 10px;
+    font-size: 14px;
 }
 
 .status-value {
-    font-weight: 600;
-    color: #2c3e50;
+    font-weight: bold;
+    color: #666;
 }
 
 .status-value.active {
-    color: #27ae60;
-    font-weight: bold;
+    color: #4caf50;
 }
 
 .init-status {
-    margin-top: 10px;
     text-align: center;
+    padding: 50px;
 }
 
 .init-status .loading {
-    color: #3498db;
-    font-size: 14px;
+    font-size: 18px;
+    color: #666;
 }
 
 .init-status .error {
-    color: #e74c3c;
-    font-size: 14px;
-    font-weight: 500;
+    font-size: 18px;
+    color: #f44336;
+    white-space: pre-wrap;
 }
 
 .app-main.disabled {
-    opacity: 0.6;
+    opacity: 0.5;
     pointer-events: none;
 }
 
-/* 响应式设计 */
+/* 响应式布局 */
 @media (max-width: 768px) {
     .settings-row {
         grid-template-columns: 1fr;
@@ -1000,76 +978,73 @@ input[type="range"] {
     }
 
     .status-info {
-        grid-template-columns: 1fr;
+        flex-direction: column;
         gap: 10px;
     }
 
     .status-item {
-        flex-direction: row;
         justify-content: space-between;
-        min-width: auto;
     }
 }
 
-/* 深色模式支持 */
+/* 暗色主题支持 */
 @media (prefers-color-scheme: dark) {
     .rvc-app {
-        background: #2c3e50;
-        color: #ecf0f1;
+        background: #1a1a1a;
+        color: #e0e0e0;
     }
 
     section {
-        background: #34495e;
-        color: #ecf0f1;
+        background: #2a2a2a;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
     }
 
     section h2 {
-        color: #ecf0f1;
-        border-bottom-color: #3498db;
+        color: #e0e0e0;
+        border-bottom-color: #444;
     }
 
     .form-group label {
-        color: #ecf0f1;
+        color: #ccc;
     }
 
     input[type="text"],
     select {
-        background: #2c3e50;
-        color: #ecf0f1;
-        border-color: #556983;
+        background: #333;
+        border-color: #444;
+        color: #e0e0e0;
     }
 
     input[type="text"]:focus,
     select:focus {
-        border-color: #3498db;
-        box-shadow: 0 0 0 2px rgba(52, 152, 219, 0.3);
+        border-color: #4caf50;
+        box-shadow: 0 0 0 2px rgba(76, 175, 80, 0.3);
     }
 
     .control-section {
-        background: #2c3e50;
-        border-color: #556983;
+        background: #252525;
+        border-color: #444;
     }
 
     .status-info {
-        color: #95a5a6;
-        background-color: #2c3e50;
-        border-color: #34495e;
+        background: #333;
+        border-color: #444;
     }
 
     .status-value {
-        color: #ecf0f1;
+        color: #aaa;
     }
 
     .status-value.active {
-        color: #2ecc71;
+        color: #66bb6a;
     }
 
     .init-status .loading {
-        color: #3498db;
+        color: #aaa;
     }
 
     .init-status .error {
-        color: #e74c3c;
+        color: #ef5350;
     }
 }
 </style>

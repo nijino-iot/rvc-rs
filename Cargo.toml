@@ -1,0 +1,3 @@
+[workspace]
+members = ["rvc-core", "rvc-ui/src-tauri"]
+resolver = "2"

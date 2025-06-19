@@ -3,15 +3,24 @@
 //! 对应 Python 代码中的 GUI 类，负责管理 RVC 应用的状态和核心逻辑
 
 use crate::{Config, ConfigManager, F0Method, RvcError, RvcResult};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
+/// 设备类型
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeviceType {
+    Input,
+    Output,
+}
+
 /// 音频设备信息
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AudioDeviceInfo {
+    pub id: String,
     pub index: usize,
     pub name: String,
     pub hostapi: String,
@@ -20,6 +29,181 @@ pub struct AudioDeviceInfo {
     pub default_sample_rate: f64,
     pub is_input: bool,
     pub is_output: bool,
+}
+
+/// 设备管理器
+#[derive(Debug)]
+pub struct DeviceManager {
+    /// 所有设备列表
+    devices: Vec<AudioDeviceInfo>,
+    /// 主机API列表
+    host_apis: Vec<String>,
+    /// 输入设备索引映射
+    input_device_indices: HashMap<String, usize>,
+    /// 输出设备索引映射
+    output_device_indices: HashMap<String, usize>,
+}
+
+impl DeviceManager {
+    /// 创建新的设备管理器
+    pub fn new() -> Self {
+        let mut manager = Self {
+            devices: Vec::new(),
+            host_apis: Vec::new(),
+            input_device_indices: HashMap::new(),
+            output_device_indices: HashMap::new(),
+        };
+        manager.initialize_default_devices();
+        manager
+    }
+
+    /// 初始化默认设备
+    fn initialize_default_devices(&mut self) {
+        // 默认主机API
+        self.host_apis = vec![
+            "DirectSound".to_string(),
+            "WASAPI".to_string(),
+            "ASIO".to_string(),
+            "MME".to_string(),
+        ];
+
+        // 模拟设备列表
+        self.devices = vec![
+            AudioDeviceInfo {
+                id: "default_input".to_string(),
+                index: 0,
+                name: "Default Input Device".to_string(),
+                hostapi: "DirectSound".to_string(),
+                max_input_channels: 2,
+                max_output_channels: 0,
+                default_sample_rate: 44100.0,
+                is_input: true,
+                is_output: false,
+            },
+            AudioDeviceInfo {
+                id: "default_output".to_string(),
+                index: 1,
+                name: "Default Output Device".to_string(),
+                hostapi: "DirectSound".to_string(),
+                max_input_channels: 0,
+                max_output_channels: 2,
+                default_sample_rate: 44100.0,
+                is_input: false,
+                is_output: true,
+            },
+            AudioDeviceInfo {
+                id: "microphone".to_string(),
+                index: 2,
+                name: "Microphone (USB Audio)".to_string(),
+                hostapi: "WASAPI".to_string(),
+                max_input_channels: 1,
+                max_output_channels: 0,
+                default_sample_rate: 48000.0,
+                is_input: true,
+                is_output: false,
+            },
+            AudioDeviceInfo {
+                id: "speakers".to_string(),
+                index: 3,
+                name: "Speakers (Realtek Audio)".to_string(),
+                hostapi: "WASAPI".to_string(),
+                max_input_channels: 0,
+                max_output_channels: 2,
+                default_sample_rate: 48000.0,
+                is_input: false,
+                is_output: true,
+            },
+        ];
+
+        // 构建索引映射
+        self.rebuild_indices();
+    }
+
+    /// 重建设备索引映射
+    fn rebuild_indices(&mut self) {
+        self.input_device_indices.clear();
+        self.output_device_indices.clear();
+
+        for (idx, device) in self.devices.iter().enumerate() {
+            if device.is_input {
+                self.input_device_indices.insert(device.name.clone(), idx);
+            }
+            if device.is_output {
+                self.output_device_indices.insert(device.name.clone(), idx);
+            }
+        }
+    }
+
+    /// 列出主机API
+    pub fn list_host_apis(&self) -> Vec<String> {
+        self.host_apis.clone()
+    }
+
+    /// 列出设备
+    pub fn list_devices(&self, device_type: DeviceType) -> Vec<AudioDeviceInfo> {
+        self.devices
+            .iter()
+            .filter(|device| match device_type {
+                DeviceType::Input => device.is_input,
+                DeviceType::Output => device.is_output,
+            })
+            .cloned()
+            .collect()
+    }
+
+    /// 根据主机API过滤设备
+    pub fn list_devices_by_hostapi(
+        &self,
+        hostapi: &str,
+        device_type: DeviceType,
+    ) -> Vec<AudioDeviceInfo> {
+        self.devices
+            .iter()
+            .filter(|device| {
+                device.hostapi == hostapi
+                    && match device_type {
+                        DeviceType::Input => device.is_input,
+                        DeviceType::Output => device.is_output,
+                    }
+            })
+            .cloned()
+            .collect()
+    }
+
+    /// 更新设备列表
+    pub fn update_devices(&mut self, hostapi: Option<&str>) {
+        // TODO: 实际实现中应该调用音频API获取真实设备
+        // 这里只是模拟更新
+        if let Some(api) = hostapi {
+            // 过滤特定主机API的设备
+            self.devices.retain(|device| device.hostapi == api);
+        }
+        self.rebuild_indices();
+    }
+
+    /// 获取设备信息
+    pub fn get_device_info(&self, device_name: &str) -> Option<&AudioDeviceInfo> {
+        self.devices
+            .iter()
+            .find(|device| device.name == device_name)
+    }
+
+    /// 获取设备采样率
+    pub fn get_device_sample_rate(&self, device_name: &str) -> Option<f64> {
+        self.get_device_info(device_name)
+            .map(|device| device.default_sample_rate)
+    }
+
+    /// 获取设备通道数
+    pub fn get_device_channels(&self, device_name: &str, is_input: bool) -> Option<usize> {
+        self.get_device_info(device_name).map(|device| {
+            if is_input {
+                device.max_input_channels
+            } else {
+                device.max_output_channels
+            }
+        })
+    }
 }
 
 /// GUI 应用状态
@@ -80,8 +264,8 @@ pub struct GuiManager {
     config_manager: ConfigManager,
     /// 当前应用状态
     state: Arc<Mutex<AppState>>,
-    /// 音频设备列表
-    audio_devices: Arc<Mutex<Vec<AudioDeviceInfo>>>,
+    /// 设备管理器
+    device_manager: Arc<Mutex<DeviceManager>>,
     /// 实时统计信息
     stats: Arc<Mutex<RealTimeStats>>,
     /// 事件发送器
@@ -107,7 +291,7 @@ impl GuiManager {
         Ok(Self {
             config_manager,
             state: Arc::new(Mutex::new(AppState::Idle)),
-            audio_devices: Arc::new(Mutex::new(Vec::new())),
+            device_manager: Arc::new(Mutex::new(DeviceManager::new())),
             stats: Arc::new(Mutex::new(RealTimeStats {
                 algorithm_latency_ms: 0.0,
                 inference_time_ms: 0.0,
@@ -130,7 +314,7 @@ impl GuiManager {
         self.config_manager.load()?;
 
         // 更新音频设备列表
-        self.update_audio_devices().await?;
+        self.update_audio_devices(None).await?;
 
         // 初始化 F0 提取器
         let config = self.config_manager.config();
@@ -159,7 +343,13 @@ impl GuiManager {
 
     /// 获取音频设备列表
     pub fn get_audio_devices(&self) -> Vec<AudioDeviceInfo> {
-        self.audio_devices.lock().unwrap().clone()
+        let device_manager = self.device_manager.lock().unwrap();
+        device_manager.devices.clone()
+    }
+
+    /// 获取设备管理器（用于更高级的操作）
+    pub fn get_device_manager(&self) -> Arc<Mutex<DeviceManager>> {
+        Arc::clone(&self.device_manager)
     }
 
     /// 获取实时统计信息
@@ -180,88 +370,36 @@ impl GuiManager {
     }
 
     /// 更新音频设备列表
-    pub async fn update_audio_devices(&self) -> RvcResult<()> {
-        // 这里应该调用系统 API 获取音频设备列表
-        // 为了简化，我们创建一些模拟设备
-        let devices = vec![
-            AudioDeviceInfo {
-                index: 0,
-                name: "Default Input".to_string(),
-                hostapi: "DirectSound".to_string(),
-                max_input_channels: 2,
-                max_output_channels: 0,
-                default_sample_rate: 44100.0,
-                is_input: true,
-                is_output: false,
-            },
-            AudioDeviceInfo {
-                index: 1,
-                name: "Default Output".to_string(),
-                hostapi: "DirectSound".to_string(),
-                max_input_channels: 0,
-                max_output_channels: 2,
-                default_sample_rate: 44100.0,
-                is_input: false,
-                is_output: true,
-            },
-            AudioDeviceInfo {
-                index: 2,
-                name: "Microphone".to_string(),
-                hostapi: "WASAPI".to_string(),
-                max_input_channels: 1,
-                max_output_channels: 0,
-                default_sample_rate: 48000.0,
-                is_input: true,
-                is_output: false,
-            },
-            AudioDeviceInfo {
-                index: 3,
-                name: "Speakers".to_string(),
-                hostapi: "WASAPI".to_string(),
-                max_input_channels: 0,
-                max_output_channels: 2,
-                default_sample_rate: 48000.0,
-                is_input: false,
-                is_output: true,
-            },
-        ];
-
-        let mut audio_devices = self.audio_devices.lock().unwrap();
-        *audio_devices = devices;
-
+    pub async fn update_audio_devices(&self, hostapi: Option<&str>) -> RvcResult<()> {
+        let mut device_manager = self.device_manager.lock().unwrap();
+        device_manager.update_devices(hostapi);
         Ok(())
     }
 
     /// 获取主机 API 列表
     pub fn get_hostapis(&self) -> Vec<String> {
-        vec![
-            "DirectSound".to_string(),
-            "WASAPI".to_string(),
-            "ASIO".to_string(),
-            "MME".to_string(),
-        ]
+        let device_manager = self.device_manager.lock().unwrap();
+        device_manager.list_host_apis()
     }
 
     /// 获取输入设备列表
-    pub fn get_input_devices(&self) -> Vec<AudioDeviceInfo> {
-        self.audio_devices
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|device| device.is_input)
-            .cloned()
-            .collect()
+    pub fn get_input_devices(&self, hostapi: Option<&str>) -> Vec<AudioDeviceInfo> {
+        let device_manager = self.device_manager.lock().unwrap();
+        if let Some(api) = hostapi {
+            device_manager.list_devices_by_hostapi(api, DeviceType::Input)
+        } else {
+            device_manager.list_devices(DeviceType::Input)
+        }
     }
 
     /// 获取输出设备列表
-    pub fn get_output_devices(&self) -> Vec<AudioDeviceInfo> {
-        self.audio_devices
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|device| device.is_output)
-            .cloned()
-            .collect()
+    pub fn get_output_devices(&self, hostapi: Option<&str>) -> Vec<AudioDeviceInfo> {
+        let device_manager = self.device_manager.lock().unwrap();
+        if let Some(api) = hostapi {
+            device_manager.list_devices_by_hostapi(api, DeviceType::Output)
+        } else {
+            device_manager.list_devices(DeviceType::Output)
+        }
     }
 
     /// 启动事件处理循环
@@ -393,29 +531,15 @@ impl GuiManager {
     }
 
     /// 获取设备采样率
-    pub fn get_device_sample_rate(&self, device_index: usize) -> Option<f64> {
-        self.audio_devices
-            .lock()
-            .unwrap()
-            .iter()
-            .find(|device| device.index == device_index)
-            .map(|device| device.default_sample_rate)
+    pub fn get_device_sample_rate(&self, device_name: &str) -> Option<f64> {
+        let device_manager = self.device_manager.lock().unwrap();
+        device_manager.get_device_sample_rate(device_name)
     }
 
     /// 获取设备通道数
-    pub fn get_device_channels(&self, device_index: usize, is_input: bool) -> Option<usize> {
-        self.audio_devices
-            .lock()
-            .unwrap()
-            .iter()
-            .find(|device| device.index == device_index)
-            .map(|device| {
-                if is_input {
-                    device.max_input_channels
-                } else {
-                    device.max_output_channels
-                }
-            })
+    pub fn get_device_channels(&self, device_name: &str, is_input: bool) -> Option<usize> {
+        let device_manager = self.device_manager.lock().unwrap();
+        device_manager.get_device_channels(device_name, is_input)
     }
 
     /// 设置延迟时间
@@ -500,13 +624,13 @@ mod tests {
         let config_path = temp_dir.path().join("gui_config.json");
 
         let manager = GuiManager::new(config_path)?;
-        manager.update_audio_devices().await?;
+        manager.update_audio_devices(None).await?;
 
         let devices = manager.get_audio_devices();
         assert!(!devices.is_empty());
 
-        let input_devices = manager.get_input_devices();
-        let output_devices = manager.get_output_devices();
+        let input_devices = manager.get_input_devices(None);
+        let output_devices = manager.get_output_devices(None);
 
         assert!(input_devices.iter().all(|d| d.is_input));
         assert!(output_devices.iter().all(|d| d.is_output));

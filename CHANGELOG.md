@@ -11,6 +11,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Real-time audio processing pipeline
 - Tauri frontend implementation
 - Model weight loading and inference optimization
+- **Frontend-Backend Communication**: Complete IPC implementation between Vue and Tauri
+  - Configuration management API (load/save)
+  - Audio device enumeration and management
+  - Real-time parameter updates
+  - Voice conversion control commands
+  - Real-time status monitoring
+- **GUI State Management**: Centralized state management in rvc-core
+  - Event-driven architecture
+  - Async command handling
+  - Device manager implementation
+- **API Documentation**: Comprehensive frontend-backend API documentation
 
 ## [0.3.0] - 2025-06-19
 
