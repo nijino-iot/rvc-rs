@@ -2,7 +2,12 @@
 //!
 //! 对应 Python 代码中的 GUI 类，负责管理 RVC 应用的状态和核心逻辑
 
-use crate::{Config, ConfigManager, F0Method, RvcError, RvcResult};
+use crate::{
+    audio_stream::{AudioStreamManager, StreamStats},
+    rvc_processor::RvcProcessor,
+    Config, ConfigManager, F0Method, RvcError, RvcResult,
+};
+use cpal::traits::{DeviceTrait, HostTrait};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -53,67 +58,129 @@ impl DeviceManager {
             input_device_indices: HashMap::new(),
             output_device_indices: HashMap::new(),
         };
-        manager.initialize_default_devices();
+        manager.scan_real_devices();
         manager
     }
 
-    /// 初始化默认设备
-    fn initialize_default_devices(&mut self) {
-        // 默认主机API
-        self.host_apis = vec![
-            "DirectSound".to_string(),
-            "WASAPI".to_string(),
-            "ASIO".to_string(),
-            "MME".to_string(),
-        ];
+    /// 扫描真实的音频设备
+    fn scan_real_devices(&mut self) {
+        // 获取可用的主机API
+        self.host_apis = cpal::available_hosts()
+            .into_iter()
+            .map(|host_id| format!("{:?}", host_id))
+            .collect();
 
-        // 模拟设备列表
-        self.devices = vec![
-            AudioDeviceInfo {
-                id: "default_input".to_string(),
+        // 如果没有可用的主机API，添加默认的
+        if self.host_apis.is_empty() {
+            self.host_apis = vec!["Default".to_string()];
+        }
+
+        self.devices.clear();
+        let mut device_index = 0;
+
+        // 使用默认主机
+        let host = cpal::default_host();
+        let host_name = format!("{:?}", host.id());
+
+        // 扫描输入设备
+        if let Ok(input_devices) = host.input_devices() {
+            for device in input_devices {
+                if let Ok(name) = device.name() {
+                    let mut device_info = AudioDeviceInfo {
+                        id: format!("input_{}", device_index),
+                        index: device_index,
+                        name: name.clone(),
+                        hostapi: host_name.clone(),
+                        max_input_channels: 0,
+                        max_output_channels: 0,
+                        default_sample_rate: 44100.0,
+                        is_input: true,
+                        is_output: false,
+                    };
+
+                    // 尝试获取默认配置
+                    if let Ok(config) = device.default_input_config() {
+                        device_info.max_input_channels = config.channels() as usize;
+                        device_info.default_sample_rate = config.sample_rate().0 as f64;
+                    } else if let Ok(configs) = device.supported_input_configs() {
+                        // 如果无法获取默认配置，尝试从支持的配置中获取信息
+                        if let Some(config) = configs.into_iter().next() {
+                            device_info.max_input_channels = config.channels() as usize;
+                            device_info.default_sample_rate = config.max_sample_rate().0 as f64;
+                        }
+                    }
+
+                    self.devices.push(device_info);
+                    device_index += 1;
+                }
+            }
+        }
+
+        // 扫描输出设备
+        if let Ok(output_devices) = host.output_devices() {
+            for device in output_devices {
+                if let Ok(name) = device.name() {
+                    // 检查是否已经作为输入设备添加
+                    let existing_device = self.devices.iter_mut().find(|d| d.name == name);
+
+                    if let Some(device_info) = existing_device {
+                        // 设备同时支持输入和输出
+                        device_info.is_output = true;
+
+                        // 更新输出通道信息
+                        if let Ok(config) = device.default_output_config() {
+                            device_info.max_output_channels = config.channels() as usize;
+                        } else if let Ok(configs) = device.supported_output_configs() {
+                            if let Some(config) = configs.into_iter().next() {
+                                device_info.max_output_channels = config.channels() as usize;
+                            }
+                        }
+                    } else {
+                        // 仅输出设备
+                        let mut device_info = AudioDeviceInfo {
+                            id: format!("output_{}", device_index),
+                            index: device_index,
+                            name: name.clone(),
+                            hostapi: host_name.clone(),
+                            max_input_channels: 0,
+                            max_output_channels: 0,
+                            default_sample_rate: 44100.0,
+                            is_input: false,
+                            is_output: true,
+                        };
+
+                        // 尝试获取默认配置
+                        if let Ok(config) = device.default_output_config() {
+                            device_info.max_output_channels = config.channels() as usize;
+                            device_info.default_sample_rate = config.sample_rate().0 as f64;
+                        } else if let Ok(configs) = device.supported_output_configs() {
+                            if let Some(config) = configs.into_iter().next() {
+                                device_info.max_output_channels = config.channels() as usize;
+                                device_info.default_sample_rate = config.max_sample_rate().0 as f64;
+                            }
+                        }
+
+                        self.devices.push(device_info);
+                        device_index += 1;
+                    }
+                }
+            }
+        }
+
+        // 如果没有扫描到任何设备，添加默认设备
+        if self.devices.is_empty() {
+            self.devices.push(AudioDeviceInfo {
+                id: "default".to_string(),
                 index: 0,
-                name: "Default Input Device".to_string(),
-                hostapi: "DirectSound".to_string(),
+                name: "Default Audio Device".to_string(),
+                hostapi: host_name,
                 max_input_channels: 2,
-                max_output_channels: 0,
-                default_sample_rate: 44100.0,
-                is_input: true,
-                is_output: false,
-            },
-            AudioDeviceInfo {
-                id: "default_output".to_string(),
-                index: 1,
-                name: "Default Output Device".to_string(),
-                hostapi: "DirectSound".to_string(),
-                max_input_channels: 0,
                 max_output_channels: 2,
                 default_sample_rate: 44100.0,
-                is_input: false,
-                is_output: true,
-            },
-            AudioDeviceInfo {
-                id: "microphone".to_string(),
-                index: 2,
-                name: "Microphone (USB Audio)".to_string(),
-                hostapi: "WASAPI".to_string(),
-                max_input_channels: 1,
-                max_output_channels: 0,
-                default_sample_rate: 48000.0,
                 is_input: true,
-                is_output: false,
-            },
-            AudioDeviceInfo {
-                id: "speakers".to_string(),
-                index: 3,
-                name: "Speakers (Realtek Audio)".to_string(),
-                hostapi: "WASAPI".to_string(),
-                max_input_channels: 0,
-                max_output_channels: 2,
-                default_sample_rate: 48000.0,
-                is_input: false,
                 is_output: true,
-            },
-        ];
+            });
+        }
 
         // 构建索引映射
         self.rebuild_indices();
@@ -172,13 +239,14 @@ impl DeviceManager {
 
     /// 更新设备列表
     pub fn update_devices(&mut self, hostapi: Option<&str>) {
-        // TODO: 实际实现中应该调用音频API获取真实设备
-        // 这里只是模拟更新
+        // 重新扫描设备
+        self.scan_real_devices();
+
+        // 如果指定了主机API，过滤设备
         if let Some(api) = hostapi {
-            // 过滤特定主机API的设备
             self.devices.retain(|device| device.hostapi == api);
+            self.rebuild_indices();
         }
-        self.rebuild_indices();
     }
 
     /// 获取设备信息
@@ -272,8 +340,10 @@ pub struct GuiManager {
     event_sender: mpsc::UnboundedSender<GuiEvent>,
     /// 事件接收器
     event_receiver: Arc<Mutex<Option<mpsc::UnboundedReceiver<GuiEvent>>>>,
-    /// 音频处理线程句柄
-    audio_thread: Option<thread::JoinHandle<()>>,
+    /// 音频流管理器
+    audio_stream: Arc<Mutex<Option<AudioStreamManager>>>,
+    /// 音频处理器
+    audio_processor: Arc<Mutex<Option<RvcProcessor>>>,
     /// 是否正在运行
     running: Arc<Mutex<bool>>,
     /// F0 预测器
@@ -301,7 +371,8 @@ impl GuiManager {
             })),
             event_sender,
             event_receiver: Arc::new(Mutex::new(Some(event_receiver))),
-            audio_thread: None,
+            audio_stream: Arc::new(Mutex::new(None)),
+            audio_processor: Arc::new(Mutex::new(None)),
             running: Arc::new(Mutex::new(false)),
             f0_predictor: None,
             delay_time: Arc::new(Mutex::new(0.0)),
@@ -429,9 +500,9 @@ impl GuiManager {
     async fn handle_event(
         event: GuiEvent,
         state: &Arc<Mutex<AppState>>,
-        _config_manager: &ConfigManager,
-        _stats: &Arc<Mutex<RealTimeStats>>,
-        _running: &Arc<Mutex<bool>>,
+        config_manager: &ConfigManager,
+        stats: &Arc<Mutex<RealTimeStats>>,
+        running: &Arc<Mutex<bool>>,
     ) {
         match event {
             GuiEvent::StartVoiceConversion => {
@@ -441,12 +512,11 @@ impl GuiManager {
                 }
 
                 {
-                    let mut is_running = _running.lock().unwrap();
+                    let mut is_running = running.lock().unwrap();
                     *is_running = true;
                 }
 
                 // 启动音频处理
-                // 这里应该启动实际的音频流处理
                 println!("Started voice conversion");
             }
             GuiEvent::StopVoiceConversion => {
@@ -507,12 +577,95 @@ impl GuiManager {
 
     /// 开始语音转换
     pub async fn start_voice_conversion(&self) -> RvcResult<()> {
+        // 获取配置
+        let config = self.config_manager.config().clone();
+
+        // 验证配置
+        if config.pth_path.is_empty() {
+            return Err(RvcError::config("请选择模型文件(.pth)"));
+        }
+
+        // 创建音频处理器
+        let processor = RvcProcessor::new(config.clone(), 48000)?;
+        *self.audio_processor.lock().unwrap() = Some(processor);
+
+        // 创建音频流管理器
+        let audio_processor = self.audio_processor.clone();
+        let processor_box = Box::new(RvcProcessorWrapper {
+            processor: audio_processor,
+        });
+
+        let mut stream_manager = AudioStreamManager::new(
+            processor_box,
+            48000,
+            2,
+            (config.block_time * 48000.0) as usize,
+        );
+
+        // 设置设备
+        if !config.sg_input_device.is_empty() {
+            stream_manager.set_input_device(&config.sg_input_device)?;
+        }
+        if !config.sg_output_device.is_empty() {
+            stream_manager.set_output_device(&config.sg_output_device)?;
+        }
+
+        // 启动音频流
+        stream_manager.start()?;
+
+        // 保存音频流管理器
+        *self.audio_stream.lock().unwrap() = Some(stream_manager);
+
+        // 启动状态更新任务
+        self.start_status_update_task();
+
         self.send_event(GuiEvent::StartVoiceConversion)
     }
 
     /// 停止语音转换
     pub async fn stop_voice_conversion(&self) -> RvcResult<()> {
+        // 停止音频流
+        if let Some(mut stream) = self.audio_stream.lock().unwrap().take() {
+            stream.stop()?;
+        }
+
+        // 清理处理器
+        *self.audio_processor.lock().unwrap() = None;
+
         self.send_event(GuiEvent::StopVoiceConversion)
+    }
+
+    /// 启动状态更新任务
+    fn start_status_update_task(&self) {
+        let audio_stream = self.audio_stream.clone();
+        let audio_processor = self.audio_processor.clone();
+        let stats = self.stats.clone();
+        let running = self.running.clone();
+
+        tokio::spawn(async move {
+            while *running.lock().unwrap() {
+                // 获取音频流统计
+                if let Some(stream) = audio_stream.lock().unwrap().as_ref() {
+                    let stream_stats = stream.get_stats();
+
+                    // 获取处理器统计
+                    let processor_stats =
+                        if let Some(processor) = audio_processor.lock().unwrap().as_ref() {
+                            processor.get_stats()
+                        } else {
+                            Default::default()
+                        };
+
+                    // 更新统计信息
+                    let mut gui_stats = stats.lock().unwrap();
+                    gui_stats.algorithm_latency_ms = stream_stats.processing_latency_ms;
+                    gui_stats.inference_time_ms = processor_stats.infer_time_ms;
+                    gui_stats.buffer_usage = stream_stats.input_buffer_usage;
+                }
+
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        });
     }
 
     /// 加载模型
@@ -586,9 +739,43 @@ impl Drop for GuiManager {
         let mut running = self.running.lock().unwrap();
         *running = false;
 
-        // 等待音频线程结束
-        if let Some(handle) = self.audio_thread.take() {
-            let _ = handle.join();
+        // 停止音频流
+        if let Some(mut stream) = self.audio_stream.lock().unwrap().take() {
+            let _ = stream.stop();
+        }
+    }
+}
+
+/// RVC 处理器包装器，用于适配 AudioProcessor trait
+struct RvcProcessorWrapper {
+    processor: Arc<Mutex<Option<RvcProcessor>>>,
+}
+
+impl crate::audio_stream::AudioProcessor for RvcProcessorWrapper {
+    fn process(&mut self, input: &[f32], output: &mut [f32]) {
+        if let Some(processor) = self.processor.lock().unwrap().as_mut() {
+            processor.process(input, output);
+        } else {
+            // 静音输出
+            for sample in output.iter_mut() {
+                *sample = 0.0;
+            }
+        }
+    }
+
+    fn get_block_size(&self) -> usize {
+        if let Some(processor) = self.processor.lock().unwrap().as_ref() {
+            processor.get_block_size()
+        } else {
+            512
+        }
+    }
+
+    fn get_latency(&self) -> usize {
+        if let Some(processor) = self.processor.lock().unwrap().as_ref() {
+            processor.get_latency()
+        } else {
+            0
         }
     }
 }

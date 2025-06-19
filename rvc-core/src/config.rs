@@ -67,6 +67,10 @@ pub struct Config {
     pub use_jit: bool,
     /// 是否启用相位声码器
     pub use_pv: bool,
+    /// 是否启用输入降噪
+    pub i_noise_reduce: bool,
+    /// 是否启用输出降噪
+    pub o_noise_reduce: bool,
     /// 派生的布尔值配置
     pub sr_model: bool,
     pub sr_device: bool,
@@ -102,6 +106,8 @@ impl Default for Config {
             f0method: f0method.clone(),
             use_jit: false,
             use_pv: false,
+            i_noise_reduce: false,
+            o_noise_reduce: false,
             // 派生值
             sr_model: sr_type == "sr_model",
             sr_device: sr_type == "sr_device",

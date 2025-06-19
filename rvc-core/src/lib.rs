@@ -4,13 +4,16 @@
 //! 负责音频处理、语音转换和相关的深度学习推理功能。
 
 pub mod audio;
+pub mod audio_stream;
 pub mod config;
 pub mod error;
 pub mod f0;
 pub mod gui;
 pub mod models;
+pub mod noise_suppression;
 pub mod pytorch_loader;
 pub mod rvc_model;
+pub mod rvc_processor;
 pub mod tensor;
 pub mod utils;
 pub mod vector_search;
@@ -18,13 +21,16 @@ pub mod world;
 
 // 重新导出主要类型和函数
 pub use audio::*;
+pub use audio_stream::*;
 pub use config::*;
 pub use error::*;
 pub use f0::*;
 pub use gui::*;
 pub use models::*;
+pub use noise_suppression::*;
 pub use pytorch_loader::*;
 pub use rvc_model::*;
+pub use rvc_processor::*;
 pub use tensor::*;
 pub use utils::*;
 pub use vector_search::*;
