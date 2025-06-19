@@ -13,11 +13,8 @@ pub mod models;
 pub mod noise_suppression;
 pub mod pytorch_loader;
 pub mod rvc_model;
-pub mod rvc_processor;
-pub mod tensor;
+
 pub mod utils;
-pub mod vector_search;
-pub mod world;
 
 // 重新导出主要类型和函数（避免重复导出）
 pub use audio::printt;
@@ -32,7 +29,7 @@ pub use models::*;
 pub use noise_suppression::*;
 pub use pytorch_loader::*;
 pub use rvc_model::*;
-pub use rvc_processor::*;
+
 pub use tensor::*;
 pub use utils::*;
 pub use vector_search::*;

@@ -130,9 +130,7 @@ async fn start_voice_conversion(state: State<'_, AppStateManager>) -> Result<(),
     info!("开始语音转换");
     let mut gui = state.gui.lock().await;
     gui.validate_config().map_err(|e| e.to_string())?;
-    gui.start_voice_conversion()
-        .await
-        .map_err(|e| e.to_string())
+    gui.start_vc().await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
