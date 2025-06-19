@@ -252,7 +252,6 @@ impl Default for Config {
             x_query: 10,
             x_center: 60,
             x_max: 65,
-            threshold: 0.5,
         }
     }
 }
@@ -272,7 +271,7 @@ impl Config {
             .map_err(|e| RvcError::config(format!("配置文件格式错误: {}", e)))?;
 
         // 更新派生值
-        config.update_derived_values();
+        // config.update_derived_values();
 
         Ok(config)
     }

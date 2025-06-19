@@ -4,11 +4,12 @@
 //! 支持加载 PyTorch .pth 模型文件和 faiss 索引文件
 
 use crate::pytorch_loader::PyTorchLoader;
-use crate::{Device, Kind, RvcError, RvcResult, Tensor};
+use crate::{RvcError, RvcResult};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tch::CModule;
+use tch::Tensor;
 
 /// RVC 模型版本
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

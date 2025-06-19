@@ -7,6 +7,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.2] - 2024-01-09
+
+### Removed
+- **Audio Module**: Removed `audio.rs` file to eliminate redundancy
+  - Removed `printt` function from audio module (moved to gui module)
+  - Removed audio file I/O functions (wav2, load_audio, write_wav)
+  - Removed resample function
+  - Removed phase_vocoder function
+  - Removed AudioDevice, AudioStreamConfig, AudioProcessor, AudioBuffer structures
+  - Removed window functions (hann_window, hamming_window, blackman_window)
+
+### Changed
+- **Device Management**: Replaced sounddevice with cpal for audio device management
+  - Updated `GUI::update_devices` to use cpal's host and device enumeration
+  - Updated `GUI::set_devices` to use cpal device indexing
+  - Updated `GUI::get_device_sample_rate` to query cpal device configurations
+  - Updated `GUI::get_device_channels` to query cpal device channel counts
+  - Implemented `get_host_apis` function using cpal::available_hosts()
+  - Implemented `get_input_devices_for_host` and `get_output_devices_for_host` functions
+  - Added proper device validation and error handling
+
+### Added
+- **CPAL Integration**: Direct implementation of Python sounddevice equivalents
+  - Added `printt` function to gui module (moved from audio module)
+  - Added cpal-based device enumeration functions
+  - Added host API selection functionality
+  - Added device configuration querying functions
+
+### Fixed
+- Removed erroneous module imports in lib.rs (tensor, vector_search, world)
+- Updated lib.rs exports to reflect removed audio module
+- Corrected cpal trait imports in gui.rs
+
+## [0.3.1] - 2024-01-09
+
+### Changed
+- **GUI Module Simplification**: Removed components not present in Python gui_v1.py
+  - Removed `AppState` enum (Python version has no explicit state management)
+  - Removed `DeviceType` enum (Python version doesn't use this abstraction)
+  - Removed `AudioDeviceInfo` struct (Python version uses simple device lists)
+  - Removed `RealTimeStats` struct (Python version doesn't have dedicated stats structure)
+  - Removed `DeviceManager` struct (Python version handles devices directly in GUI class)
+  - Removed complex helper methods not in Python version (`recalculate_delay_time`, `get_stats`, `get_state`, `apply_threshold_gate`, `apply_rms_mixing`, `apply_sola_algorithm`, `switch_function_mode`, `save_current_settings`, `load_settings`)
+  - Removed `Drop` trait implementation
+  - Simplified audio callback to match Python's audio_callback method
+  - Updated to use `RvcRealtimeModel` instead of non-existent `RvcInference`
+  - Streamlined device management to match Python's update_devices/set_devices pattern
+  - Fixed import paths and dependency issues
+  - Aligned GUI manager structure with Python GUI class
+
+### Fixed
+- Corrected model initialization parameters to match `RvcRealtimeModel::new` signature
+- Fixed tensor creation methods and device handling
+- Resolved compilation errors in gui.rs module
+
+## [0.3.0] - 2024-01-08
+
 ### Added
 - Real-time audio processing pipeline
 - Tauri frontend implementation

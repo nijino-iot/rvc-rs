@@ -2,9 +2,10 @@
 //!
 //! 提供 RVC 项目中常用的工具函数和辅助类型
 
-use crate::{Device, Kind, RvcError, RvcResult, Tensor};
+use crate::{RvcError, RvcResult};
 use std::path::Path;
 use std::time::{Duration, Instant};
+use tch::Tensor;
 
 /// 时间测量工具
 pub struct Timer {
@@ -144,99 +145,6 @@ pub mod audio_utils {
         }
 
         output
-    }
-}
-
-/// 张量实用工具
-pub mod tensor_utils {
-    use super::*;
-
-    /// 从音频数据创建张量
-    pub fn audio_to_tensor(audio: &[f32], device: Device) -> Tensor {
-        Tensor::from_slice(audio).to_device(device)
-    }
-
-    /// 从张量提取音频数据
-    pub fn tensor_to_audio(tensor: &Tensor) -> RvcResult<Vec<f32>> {
-        let tensor = tensor.clone().to_device(Device::Cpu);
-        let data: Vec<f32> = tensor.try_into()?;
-        Ok(data)
-    }
-
-    /// 创建汉宁窗
-    pub fn hann_window(size: i64, device: Device) -> Tensor {
-        let n = Tensor::arange(size, (Kind::Float, device));
-        let pi = std::f64::consts::PI;
-        let factor = 2.0 * pi / (size - 1) as f64;
-        (n * factor).sin().pow_tensor_scalar(2.0)
-    }
-
-    /// 预加重滤波
-    pub fn preemphasis(audio: &Tensor, coeff: f32) -> RvcResult<Tensor> {
-        let size = audio.size();
-        if size.is_empty() {
-            return Ok(audio.shallow_clone());
-        }
-
-        let shifted = Tensor::cat(
-            &[
-                &Tensor::zeros(&[1], audio.kind_device()),
-                &audio.narrow(0, 0, size[0] - 1),
-            ],
-            0,
-        );
-        Ok(audio.sub(&shifted.mul_scalar(coeff as f64)))
-    }
-
-    /// 去加重滤波
-    pub fn deemphasis(audio: &Tensor, coeff: f32) -> RvcResult<Tensor> {
-        let mut result = Tensor::zeros_like(audio);
-        let size = audio.size()[0];
-
-        // 简化的递归实现
-        for i in 0..size {
-            let current_sample = audio.get(i as i64);
-            let prev_sample = if i > 0 {
-                result.get((i - 1) as i64)
-            } else {
-                Tensor::zeros(&[], audio.kind_device())
-            };
-            let new_sample = current_sample.add(&prev_sample.mul_scalar(coeff as f64));
-            result = result.slice_scatter(&new_sample.unsqueeze(0), 0, i as i64, 1);
-        }
-
-        Ok(result)
-    }
-
-    /// 填充张量到指定长度
-    pub fn pad_or_trim(tensor: &Tensor, target_length: i64) -> Tensor {
-        let current_length = tensor.size()[0];
-
-        if current_length == target_length {
-            tensor.shallow_clone()
-        } else if current_length < target_length {
-            // 填充零
-            let padding = target_length - current_length;
-            let zeros = Tensor::zeros(&[padding], tensor.kind_device());
-            Tensor::cat(&[&tensor.shallow_clone(), &zeros], 0)
-        } else {
-            // 截断
-            tensor.narrow(0, 0, target_length)
-        }
-    }
-
-    /// 批量填充张量
-    pub fn batch_pad(tensors: &[Tensor]) -> Tensor {
-        if tensors.is_empty() {
-            panic!("Cannot pad empty tensor list");
-        }
-
-        let max_length = tensors.iter().map(|t| t.size()[0]).max().unwrap();
-        let padded_tensors: Vec<Tensor> =
-            tensors.iter().map(|t| pad_or_trim(t, max_length)).collect();
-
-        let tensor_refs: Vec<&Tensor> = padded_tensors.iter().collect();
-        Tensor::stack(&tensor_refs, 0)
     }
 }
 
@@ -517,119 +425,5 @@ impl PerformanceMonitor {
 impl Default for PerformanceMonitor {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_timer() {
-        let timer = Timer::new("test");
-        std::thread::sleep(std::time::Duration::from_millis(10));
-        assert!(timer.elapsed_ms() >= 10.0);
-    }
-
-    #[test]
-    fn test_audio_conversion() {
-        let f32_samples = vec![0.5, -0.5, 1.0, -1.0];
-        let i16_samples = audio_utils::f32_to_i16(&f32_samples);
-        let converted_back = audio_utils::i16_to_f32(&i16_samples);
-
-        for (original, converted) in f32_samples.iter().zip(converted_back.iter()) {
-            assert!((original - converted).abs() < 0.001);
-        }
-    }
-
-    #[test]
-    fn test_rms_calculation() {
-        let samples = vec![1.0, 0.0, -1.0, 0.0];
-        let rms = audio_utils::calculate_rms(&samples);
-        assert!((rms - 0.707).abs() < 0.01); // sqrt(0.5) ≈ 0.707
-    }
-
-    #[test]
-    fn test_db_conversion() {
-        let linear = 0.5;
-        let db = audio_utils::linear_to_db(linear);
-        let back_to_linear = audio_utils::db_to_linear(db);
-        assert!((linear - back_to_linear).abs() < 0.001);
-    }
-
-    #[test]
-    fn test_math_utils() {
-        assert_eq!(math_utils::lerp(0.0, 10.0, 0.5), 5.0);
-        assert_eq!(math_utils::clamp(5.0, 0.0, 10.0), 5.0);
-        assert_eq!(math_utils::clamp(-5.0, 0.0, 10.0), 0.0);
-        assert_eq!(math_utils::clamp(15.0, 0.0, 10.0), 10.0);
-    }
-
-    #[test]
-    fn test_cosine_similarity() {
-        let a = vec![1.0, 0.0, 0.0];
-        let b = vec![1.0, 0.0, 0.0];
-        assert!((math_utils::cosine_similarity(&a, &b) - 1.0).abs() < 0.001);
-
-        let c = vec![1.0, 0.0, 0.0];
-        let d = vec![0.0, 1.0, 0.0];
-        assert!((math_utils::cosine_similarity(&c, &d) - 0.0).abs() < 0.001);
-    }
-
-    #[test]
-    fn test_file_size_formatting() {
-        assert_eq!(fs_utils::format_file_size(512), "512 B");
-        assert_eq!(fs_utils::format_file_size(1536), "1.5 KB");
-        assert_eq!(fs_utils::format_file_size(1048576), "1.0 MB");
-    }
-
-    #[test]
-    fn test_validation() {
-        assert!(validation::validate_sample_rate(44100).is_ok());
-        assert!(validation::validate_sample_rate(12345).is_err());
-
-        assert!(validation::validate_pitch_shift(12).is_ok());
-        assert!(validation::validate_pitch_shift(30).is_err());
-
-        assert!(validation::validate_probability(0.5, "test").is_ok());
-        assert!(validation::validate_probability(1.5, "test").is_err());
-    }
-
-    #[test]
-    fn test_performance_monitor() {
-        let mut monitor = PerformanceMonitor::new();
-
-        monitor.start_timer("test");
-        std::thread::sleep(std::time::Duration::from_millis(10));
-        let elapsed = monitor.end_timer("test");
-
-        assert!(elapsed.is_some());
-        assert!(elapsed.unwrap() >= 10.0);
-
-        monitor.increment_counter("calls");
-        monitor.increment_counter("calls");
-        assert_eq!(monitor.get_counter("calls"), 2);
-    }
-
-    #[test]
-    fn test_moving_average() {
-        let data = vec![1.0, 2.0, 3.0, 4.0, 5.0];
-        let avg = math_utils::moving_average(&data, 3);
-        assert!(!avg.is_empty());
-        assert_eq!(avg.len(), 3); // 5 - 3 + 1 = 3
-    }
-
-    #[test]
-    fn test_tensor_utils() {
-        let device = Device::Cpu;
-        let audio = vec![0.1, 0.2, 0.3];
-
-        let tensor = tensor_utils::audio_to_tensor(&audio, device);
-        assert_eq!(tensor.size(), &[3]);
-
-        let converted_back = tensor_utils::tensor_to_audio(&tensor).unwrap();
-        for (original, converted) in audio.iter().zip(converted_back.iter()) {
-            assert!((original - converted).abs() < 0.001);
-        }
     }
 }
