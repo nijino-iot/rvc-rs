@@ -1,6 +1,6 @@
 [package]
 name = "rvc-core"
-version = "0.1.0"
+version = "0.3.0"
 edition = "2021"
 
 [dependencies]
@@ -9,6 +9,10 @@ tch = { version = "0.16", features = ["download-libtorch"] }
 # 音频处理
 hound = "3.5"
 dasp = "0.11"
+cpal = "0.15"
+rubato = "0.15"
+apodize = "1.0"
+realfft = "3.3"
 # 并发和异步
 tokio = { version = "1.0", features = ["full"] }
 # 序列化
@@ -16,6 +20,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 # 数学和科学计算
 ndarray = "0.15"
+ndarray-linalg = "0.16"
 # 错误处理
 anyhow = "1.0"
 thiserror = "1.0"
@@ -27,6 +32,19 @@ env_logger = "0.10"
 # 实用工具
 uuid = { version = "1.0", features = ["v4"] }
 num_cpus = "1.0"
+# 模型加载相关
+byteorder = "1.5"
+memmap2 = "0.9"
+# Python 互操作 (用于加载 PyTorch 检查点)
+pyo3 = { version = "0.20", features = ["auto-initialize"] }
+# 文件系统操作
+walkdir = "2.4"
+# 信号处理
+rustfft = "6.2"
+# 数值计算
+nalgebra = "0.32"
+# 简单数学计算
+libm = "0.2"
 
 [dev-dependencies]
 tempfile = "3.0"

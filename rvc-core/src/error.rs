@@ -25,6 +25,9 @@ pub enum RvcError {
     #[error("F0 提取错误: {0}")]
     F0Error(String),
 
+    #[error("向量搜索错误: {0}")]
+    VectorSearchError(String),
+
     #[error("IO 错误: {0}")]
     IoError(#[from] std::io::Error),
 
@@ -88,6 +91,11 @@ impl RvcError {
     /// 创建 F0 错误
     pub fn f0(msg: impl Into<String>) -> Self {
         Self::F0Error(msg.into())
+    }
+
+    /// 创建向量搜索错误
+    pub fn vector_search(msg: impl Into<String>) -> Self {
+        Self::VectorSearchError(msg.into())
     }
 
     /// 创建数学错误

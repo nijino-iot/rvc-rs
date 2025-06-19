@@ -9,8 +9,12 @@ pub mod error;
 pub mod f0;
 pub mod gui;
 pub mod models;
+pub mod pytorch_loader;
+pub mod rvc_model;
 pub mod tensor;
 pub mod utils;
+pub mod vector_search;
+pub mod world;
 
 // 重新导出主要类型和函数
 pub use audio::*;
@@ -19,8 +23,12 @@ pub use error::*;
 pub use f0::*;
 pub use gui::*;
 pub use models::*;
+pub use pytorch_loader::*;
+pub use rvc_model::*;
 pub use tensor::*;
 pub use utils::*;
+pub use vector_search::*;
+pub use world::*;
 
 use log::info;
 

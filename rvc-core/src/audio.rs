@@ -1,9 +1,13 @@
 //! 音频处理模块
 //!
-//! 对应 Python 代码中的音频处理功能，包括相位声码器等
+//! 对应 Python 代码中的音频处理功能，包括相位声码器、音频加载和重采样等
 
-use crate::{Device, Kind, RvcError, RvcResult, Tensor};
+use crate::{Kind, RvcError, RvcResult, Tensor};
+use hound::{SampleFormat, WavReader, WavSpec, WavWriter};
 use std::f64::consts::PI;
+use std::fs::File;
+use std::io::{BufReader, BufWriter};
+use std::path::Path;
 
 /// 打印函数，对应 Python 中的 printt 函数
 pub fn printt(msg: &str, args: &[&str]) {
@@ -17,6 +21,199 @@ pub fn printt(msg: &str, args: &[&str]) {
         }
         println!("{}", formatted);
     }
+}
+
+/// 音频格式转换，对应 Python 中的 wav2 函数
+///
+/// # 参数
+/// - `input_path`: 输入文件路径
+/// - `output_path`: 输出文件路径
+/// - `format`: 目标格式 ("wav", "mp3", "flac", etc.)
+pub fn wav2<P: AsRef<Path>>(input_path: P, output_path: P, format: &str) -> RvcResult<()> {
+    let input_path = input_path.as_ref();
+    let output_path = output_path.as_ref();
+
+    // 读取输入音频文件
+    let (audio_data, sample_rate) = load_audio_wav(input_path)?;
+
+    // 根据格式写入输出文件
+    match format.to_lowercase().as_str() {
+        "wav" => {
+            write_wav(output_path, &audio_data, sample_rate)?;
+        }
+        _ => {
+            return Err(RvcError::audio(format!("Unsupported format: {}", format)));
+        }
+    }
+
+    Ok(())
+}
+
+/// 加载音频文件，对应 Python 中的 load_audio 函数
+///
+/// # 参数
+/// - `file_path`: 音频文件路径
+/// - `sr`: 目标采样率
+///
+/// # 返回
+/// 返回重采样后的音频数据
+pub fn load_audio<P: AsRef<Path>>(file_path: P, sr: u32) -> RvcResult<Vec<f32>> {
+    let file_path = file_path.as_ref();
+
+    // 检查文件是否存在
+    if !file_path.exists() {
+        return Err(RvcError::audio(format!(
+            "Audio file does not exist: {}",
+            file_path.display()
+        )));
+    }
+
+    // 读取音频文件
+    let (mut audio_data, original_sr) = load_audio_wav(file_path)?;
+
+    // 如果采样率不同，进行重采样
+    if original_sr != sr {
+        audio_data = resample(&audio_data, original_sr, sr)?;
+    }
+
+    Ok(audio_data)
+}
+
+/// 从WAV文件读取音频数据
+fn load_audio_wav<P: AsRef<Path>>(file_path: P) -> RvcResult<(Vec<f32>, u32)> {
+    let file = File::open(file_path.as_ref())
+        .map_err(|e| RvcError::audio(format!("Failed to open file: {}", e)))?;
+    let reader = BufReader::new(file);
+
+    let mut wav_reader = WavReader::new(reader)
+        .map_err(|e| RvcError::audio(format!("Failed to read WAV: {}", e)))?;
+
+    let spec = wav_reader.spec();
+    let sample_rate = spec.sample_rate;
+    let channels = spec.channels as usize;
+
+    // 读取所有样本
+    let samples: Result<Vec<_>, _> = match spec.sample_format {
+        SampleFormat::Float => wav_reader.samples::<f32>().collect(),
+        SampleFormat::Int => wav_reader
+            .samples::<i32>()
+            .collect::<Result<Vec<_>, _>>()
+            .map(|samples| {
+                samples
+                    .into_iter()
+                    .map(|s| s as f32 / i32::MAX as f32)
+                    .collect()
+            }),
+    };
+
+    let samples = samples.map_err(|e| RvcError::audio(format!("Failed to read samples: {}", e)))?;
+
+    // 转换为单声道（如果是立体声，取平均值）
+    let mono_samples = if channels == 1 {
+        samples
+    } else {
+        samples
+            .chunks(channels)
+            .map(|chunk| chunk.iter().sum::<f32>() / channels as f32)
+            .collect()
+    };
+
+    Ok((mono_samples, sample_rate))
+}
+
+/// 写入WAV文件
+fn write_wav<P: AsRef<Path>>(file_path: P, audio_data: &[f32], sample_rate: u32) -> RvcResult<()> {
+    let spec = WavSpec {
+        channels: 1,
+        sample_rate,
+        bits_per_sample: 32,
+        sample_format: SampleFormat::Float,
+    };
+
+    let file = File::create(file_path.as_ref())
+        .map_err(|e| RvcError::audio(format!("Failed to create file: {}", e)))?;
+    let writer = BufWriter::new(file);
+
+    let mut wav_writer = WavWriter::new(writer, spec)
+        .map_err(|e| RvcError::audio(format!("Failed to create WAV writer: {}", e)))?;
+
+    for &sample in audio_data {
+        wav_writer
+            .write_sample(sample)
+            .map_err(|e| RvcError::audio(format!("Failed to write sample: {}", e)))?;
+    }
+
+    wav_writer
+        .finalize()
+        .map_err(|e| RvcError::audio(format!("Failed to finalize WAV: {}", e)))?;
+
+    Ok(())
+}
+
+/// 音频重采样
+///
+/// # 参数
+/// - `audio_data`: 输入音频数据
+/// - `original_sr`: 原始采样率
+/// - `target_sr`: 目标采样率
+///
+/// # 返回
+/// 重采样后的音频数据
+pub fn resample(audio_data: &[f32], original_sr: u32, target_sr: u32) -> RvcResult<Vec<f32>> {
+    if original_sr == target_sr {
+        return Ok(audio_data.to_vec());
+    }
+
+    let ratio = original_sr as f64 / target_sr as f64;
+    let output_len = (audio_data.len() as f64 / ratio) as usize;
+    let mut output = Vec::with_capacity(output_len);
+
+    // 简单的线性插值重采样
+    for i in 0..output_len {
+        let src_idx = i as f64 * ratio;
+        let idx0 = src_idx.floor() as usize;
+        let idx1 = (idx0 + 1).min(audio_data.len() - 1);
+        let frac = src_idx - idx0 as f64;
+
+        if idx0 < audio_data.len() {
+            let sample0 = audio_data[idx0];
+            let sample1 = if idx1 < audio_data.len() {
+                audio_data[idx1]
+            } else {
+                sample0
+            };
+
+            // 线性插值
+            let interpolated = sample0 + (sample1 - sample0) * frac as f32;
+            output.push(interpolated);
+        } else {
+            output.push(0.0);
+        }
+    }
+
+    Ok(output)
+}
+
+/// 清理文件路径，对应 Python 中的 clean_path 函数
+pub fn clean_path(path_str: &str) -> String {
+    let mut cleaned = path_str.to_string();
+
+    // 移除 Unicode 控制字符
+    cleaned = cleaned
+        .chars()
+        .filter(|c| !c.is_control() || *c == '\n')
+        .collect();
+
+    // 移除首尾空格和引号
+    cleaned = cleaned.trim().trim_matches('"').trim().to_string();
+
+    // 在 Windows 上将 / 替换为 \
+    #[cfg(windows)]
+    {
+        cleaned = cleaned.replace('/', "\\");
+    }
+
+    cleaned
 }
 
 /// 相位声码器实现，对应 Python 中的 phase_vocoder 函数
@@ -306,6 +503,41 @@ mod tests {
     fn test_printt() {
         printt("Hello", &[]);
         printt("Hello %0", &["World"]);
+    }
+
+    #[test]
+    fn test_clean_path() {
+        let path = "  \"test/path.wav\"  ";
+        let cleaned = clean_path(path);
+        #[cfg(windows)]
+        assert_eq!(cleaned, "test\\path.wav");
+        #[cfg(not(windows))]
+        assert_eq!(cleaned, "test/path.wav");
+    }
+
+    #[test]
+    fn test_resample() -> RvcResult<()> {
+        // 创建44.1kHz的测试信号
+        let original_sr = 44100;
+        let target_sr = 16000;
+        let duration = 0.1; // 0.1秒
+        let samples = (original_sr as f32 * duration) as usize;
+
+        let mut audio_data = Vec::with_capacity(samples);
+        for i in 0..samples {
+            let t = i as f32 / original_sr as f32;
+            let sample = (2.0 * std::f32::consts::PI * 440.0 * t).sin(); // 440Hz正弦波
+            audio_data.push(sample);
+        }
+
+        let resampled = resample(&audio_data, original_sr, target_sr)?;
+        let expected_len =
+            (audio_data.len() as f32 * target_sr as f32 / original_sr as f32) as usize;
+
+        // 允许一定的误差
+        assert!((resampled.len() as i32 - expected_len as i32).abs() <= 10);
+
+        Ok(())
     }
 
     #[test]

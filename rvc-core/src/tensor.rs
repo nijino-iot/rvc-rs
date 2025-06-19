@@ -224,6 +224,38 @@ impl Tensor {
         }
     }
 
+    /// Reshape tensor (alias for view)
+    pub fn reshape(&self, shape: &[i64]) -> Self {
+        self.view(shape)
+    }
+
+    /// Convert tensor to specified kind (dtype)
+    pub fn to_kind(&self, kind: Kind) -> Self {
+        Self {
+            inner: self.inner.to_kind(kind),
+        }
+    }
+
+    /// In-place copy from another tensor
+    pub fn copy_(&mut self, src: &Tensor) -> &mut Self {
+        self.inner.copy_(&src.inner);
+        self
+    }
+
+    /// Natural logarithm
+    pub fn log(&self) -> Self {
+        Self {
+            inner: self.inner.log(),
+        }
+    }
+
+    /// Round to nearest integer
+    pub fn round(&self) -> Self {
+        Self {
+            inner: self.inner.round(),
+        }
+    }
+
     /// Narrow tensor along dimension
     pub fn narrow(&self, dim: i64, start: i64, length: i64) -> Self {
         Self {
@@ -446,6 +478,24 @@ impl std::ops::Mul<f64> for &Tensor {
     type Output = Tensor;
     fn mul(self, scalar: f64) -> Tensor {
         self.mul_scalar(scalar)
+    }
+}
+
+impl std::ops::Add<f64> for Tensor {
+    type Output = Tensor;
+    fn add(self, scalar: f64) -> Tensor {
+        Tensor {
+            inner: &self.inner + scalar,
+        }
+    }
+}
+
+impl std::ops::Add<f64> for &Tensor {
+    type Output = Tensor;
+    fn add(self, scalar: f64) -> Tensor {
+        Tensor {
+            inner: &self.inner + scalar,
+        }
     }
 }
 

@@ -50,7 +50,6 @@ impl Drop for Timer {
 
 /// 音频实用工具
 pub mod audio_utils {
-    use super::*;
 
     /// 将音频数据从 f32 转换为 i16
     pub fn f32_to_i16(samples: &[f32]) -> Vec<i16> {
@@ -312,7 +311,6 @@ pub mod fs_utils {
 
 /// 数学实用工具
 pub mod math_utils {
-    use super::*;
 
     /// 线性插值
     pub fn lerp(a: f32, b: f32, t: f32) -> f32 {

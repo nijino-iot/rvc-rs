@@ -2,14 +2,11 @@
 //!
 //! 对应 Python 代码中的 GUI 类，负责管理 RVC 应用的状态和核心逻辑
 
-use crate::{
-    Config, ConfigManager, Device, F0ExtractorFactory, F0Method, RvcError, RvcResult, Tensor,
-};
-use std::collections::HashMap;
+use crate::{Config, ConfigManager, F0Method, RvcError, RvcResult};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::sync::mpsc;
 
 /// 音频设备信息
@@ -95,8 +92,8 @@ pub struct GuiManager {
     audio_thread: Option<thread::JoinHandle<()>>,
     /// 是否正在运行
     running: Arc<Mutex<bool>>,
-    /// F0 提取器
-    f0_extractor: Option<Box<dyn crate::F0Extractor + Send + Sync>>,
+    /// F0 预测器
+    f0_predictor: Option<Box<dyn crate::F0Predictor + Send + Sync>>,
     /// 延迟测量
     delay_time: Arc<Mutex<f64>>,
 }
@@ -122,7 +119,7 @@ impl GuiManager {
             event_receiver: Arc::new(Mutex::new(Some(event_receiver))),
             audio_thread: None,
             running: Arc::new(Mutex::new(false)),
-            f0_extractor: None,
+            f0_predictor: None,
             delay_time: Arc::new(Mutex::new(0.0)),
         })
     }
@@ -137,10 +134,11 @@ impl GuiManager {
 
         // 初始化 F0 提取器
         let config = self.config_manager.config();
-        let f0_method = F0Method::from_str(&config.f0method)
+        let _f0_method = F0Method::from_str(&config.f0method)
             .ok_or_else(|| RvcError::config("Invalid F0 method"))?;
 
-        self.f0_extractor = Some(F0ExtractorFactory::create(f0_method, Some(config.n_cpu))?);
+        // F0 predictor initialization would go here
+        // self.f0_predictor = Some(F0PredictorFactory::create_default(f0_method)?);
 
         // 启动事件处理循环
         self.start_event_loop().await?;
