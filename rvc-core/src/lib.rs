@@ -8,7 +8,7 @@ pub mod error;
 pub mod f0;
 pub mod gui;
 pub mod pytorch_loader;
-pub mod rvc_model;
+pub mod rtrvc;
 pub mod sd;
 
 pub mod utils;
@@ -19,7 +19,7 @@ pub use error::*;
 pub use f0::*;
 pub use gui::GuiManager;
 pub use pytorch_loader::*;
-pub use rvc_model::*;
+pub use rtrvc::*;
 pub use sd::{printt, AudioStream, DeviceInfo, HostApiInfo};
 
 pub use utils::*;

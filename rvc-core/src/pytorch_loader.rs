@@ -2,12 +2,13 @@
 //!
 //! 提供从 PyTorch 检查点文件加载模型参数的功能
 
-use crate::{Kind, RvcError, RvcResult, Tensor};
+use crate::{RvcError, RvcResult};
 use byteorder::{LittleEndian, ReadBytesExt};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
+use tch::{Kind, Tensor};
 
 /// 张量信息结构
 #[derive(Debug, Clone)]

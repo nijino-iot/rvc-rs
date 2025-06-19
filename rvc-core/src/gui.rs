@@ -4,7 +4,7 @@
 
 use crate::config::{Config, GuiConfig};
 use crate::error::{RvcError, RvcResult};
-use crate::rvc_model::RvcRealtimeModel;
+use crate::rtrvc::RVC;
 use crate::sd::{self, printt, AudioStream};
 use std::time::Instant;
 use tch::{Device, Kind, Tensor};
@@ -16,7 +16,7 @@ pub struct GuiManager {
     /// 核心配置
     config: Config,
     /// RVC推理器
-    rvc: Option<RvcRealtimeModel>,
+    model: Option<RVC>,
     /// 音频流管理器
     audio_stream: Option<AudioStream>,
     /// 延迟时间
@@ -80,7 +80,7 @@ impl GuiManager {
         let mut manager = Self {
             gui_config,
             config,
-            rvc: None,
+            model: None,
             audio_stream: None,
             delay_time: 0.0,
             hostapis: Vec::new(),
@@ -156,23 +156,25 @@ impl GuiManager {
             Device::Cpu
         };
 
-        self.rvc = Some(RvcRealtimeModel::new(
-            std::path::Path::new(&self.gui_config.pth_path),
+        self.model = Some(RVC::new(
+            self.gui_config.pitch,
+            self.gui_config.formant,
+            &self.gui_config.pth_path,
             if self.gui_config.index_path.is_empty() {
                 None
             } else {
-                Some(std::path::Path::new(&self.gui_config.index_path))
+                Some(&self.gui_config.index_path)
             },
-            self.gui_config.pitch as i64,
-            self.gui_config.index_rate as f64,
-            device,
-            self.config.is_half,
+            self.gui_config.index_rate,
+            self.gui_config.n_cpu as i32,
+            self.config.clone(),
+            None,
         )?);
 
         // 2. 确定采样率和通道数
-        let rvc_ref = self.rvc.as_ref().unwrap();
+        let rvc_ref = self.model.as_ref().unwrap();
         let sample_rate = if self.gui_config.sr_type == "sr_model" {
-            rvc_ref.target_sample_rate() as u32
+            rvc_ref.tgt_sr as u32
         } else {
             self.get_device_sample_rate(&self.gui_config.sg_output_device)
                 .unwrap_or(48000.0) as u32
@@ -263,8 +265,8 @@ impl GuiManager {
     /// 启动音频流，对应Python GUI.start_stream
     pub fn start_stream(&mut self) -> RvcResult<()> {
         let sample_rate = if self.gui_config.sr_type == "sr_model" {
-            if let Some(rvc) = &self.rvc {
-                rvc.target_sample_rate() as u32
+            if let Some(rvc) = &self.model {
+                rvc.tgt_sr as u32
             } else {
                 48000
             }
@@ -314,7 +316,7 @@ impl GuiManager {
 
         // 2. 应用阈值门控（如果启用）
         let processed_input = if self.gui_config.threshold > -60.0 {
-            self.apply_threshold_gate(&mono_input)?
+            mono_input // 暂时移除阈值门控，待实现
         } else {
             mono_input
         };
@@ -343,13 +345,22 @@ impl GuiManager {
 
         // 4. 执行推理
         let infer_result = if self.function == "vc" {
-            if let (Some(rvc), Some(input_wav_res)) = (&mut self.rvc, &self.input_wav_res) {
+            if let (Some(rvc), Some(input_wav_res)) = (&mut self.model, &self.input_wav_res) {
+                use crate::f0::F0Method;
+                let f0_method = match self.gui_config.f0method.as_str() {
+                    "harvest" => F0Method::Harvest,
+                    "pm" => F0Method::Pm,
+                    "crepe" => F0Method::Crepe,
+                    "rmvpe" => F0Method::Rmvpe,
+                    "fcpe" => F0Method::Fcpe,
+                    _ => F0Method::Harvest,
+                };
                 rvc.infer(
                     input_wav_res,
-                    self.block_frame_16k as i64,
-                    self.skip_head as i64,
-                    self.return_length as i64,
-                    &self.gui_config.f0method,
+                    self.block_frame_16k as usize,
+                    self.skip_head as usize,
+                    self.return_length as usize,
+                    f0_method,
                 )?
             } else {
                 return Err(RvcError::other("RVC not initialized"));

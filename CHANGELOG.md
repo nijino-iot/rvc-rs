@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Core Module Migration**: Replaced `rvc_model.rs` with `rtrvc.rs`
+  - Migrated from `RvcRealtimeModel` to `RVC` struct based on Python `rtrvc.py`
+  - Updated `GuiManager` to use new `RVC` struct instead of `RvcRealtimeModel`
+  - Simplified model interface to match Python implementation more closely
+  - Updated tensor operations to use `tch` crate directly
+  - Improved F0 extraction method handling with proper enum mapping
+
+### Removed
+- **Legacy Model**: Removed `rvc_model.rs` module
+  - Removed `RvcVersion` enum
+  - Removed `RvcCheckpoint` struct
+  - Removed `FaissIndex` struct
+  - Removed `RvcRealtimeModel` struct with complex caching system
+  - Removed `RvcModelManager` struct
+  - Removed `IndexInfo` struct
+
+### Added
+- **New RVC Implementation**: Added `rtrvc.rs` based on Python `infer/lib/rtrvc.py`
+  - Added `RVC` struct with simplified architecture
+  - Added `printt` function for Python-compatible logging
+  - Added device string parsing for `tch::Device` conversion
+  - Added placeholder implementations for F0 extraction methods
+  - Added support for RMVPE, FCPE, CREPE, Harvest, PM, and DIO F0 methods
+  - Added index search capability (placeholder implementation)
+  - Added model JIT loading support
+  - Added formant shifting and pitch key changing
+  - Added real-time audio processing pipeline
+
+### Fixed
+- Fixed import errors in `gui.rs` and `pytorch_loader.rs`
+- Fixed tensor construction methods to use `Tensor::from_slice` instead of deprecated `of_slice`
+- Fixed device compatibility checks for different backends
+- Fixed borrowing issues in model initialization
+- Fixed type conversions between `u32` and `usize` for audio processing
+
 ## [0.3.2] - 2024-01-09
 
 ### Removed
