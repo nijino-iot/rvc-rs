@@ -570,7 +570,7 @@ const selectIndexFile = async () => {
 const startVoiceConversion = async () => {
     try {
         // 保存配置
-        await invoke("save_config", { config: formData });
+        await invoke("save_config", { data: formData });
 
         // 开始转换
         await invoke("start_voice_conversion");

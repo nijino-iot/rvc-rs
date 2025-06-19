@@ -1,57 +1,60 @@
-use log::{error, info};
-use serde::{Deserialize, Serialize};
+use log::info;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
-use tauri::{Manager, State};
+use std::sync::Arc;
+use tauri::State;
+use tokio::sync::Mutex;
 
 // 引入 rvc_core 库
 use rvc_core::{
     config::{Config, ConfigManager},
-    error::RvcError,
-    gui::{AppState, AudioDeviceInfo, DeviceManager, GuiManager, RealTimeStats},
+    gui::{AppState, AudioDeviceInfo, GuiManager},
 };
 
 /// 应用状态管理 - 仅包含对 core 的引用
-pub struct AppStateManager {
+struct AppStateManager {
     /// GUI 管理器
-    gui_manager: Arc<Mutex<GuiManager>>,
+    gui: Arc<Mutex<GuiManager>>,
     /// 配置管理器
-    config_manager: Arc<Mutex<ConfigManager>>,
+    config: Arc<Mutex<ConfigManager>>,
+}
+
+use directories::ProjectDirs;
+
+fn get_config_path() -> PathBuf {
+    // org, app name, subproject name（任意写）
+    let proj_dirs = ProjectDirs::from("me", "kigis", "rvc-ui").expect("无法获取系统配置路径");
+    proj_dirs.config_dir().join("config.json")
 }
 
 impl AppStateManager {
     pub fn new() -> Self {
-        let config_path = PathBuf::from("configs/inuse/config.json");
-        let config_manager = Arc::new(Mutex::new(ConfigManager::new(config_path.clone())));
-        let gui_manager = Arc::new(Mutex::new(
+        let config_path = get_config_path();
+        let config = Arc::new(Mutex::new(ConfigManager::new(config_path.clone())));
+        let gui = Arc::new(Mutex::new(
             GuiManager::new(config_path).expect("Failed to create GUI manager"),
         ));
 
-        Self {
-            gui_manager,
-            config_manager,
-        }
+        Self { gui, config }
     }
 }
 
 // ========== 配置管理相关命令 ==========
-
 #[tauri::command]
-pub fn load_config(state: State<AppStateManager>) -> Result<Config, String> {
+async fn load_config(state: State<'_, AppStateManager>) -> Result<Config, String> {
     info!("加载配置文件");
-    let mut config_manager = state.config_manager.lock().unwrap();
-    config_manager.load().map_err(|e| e.to_string())?;
-    Ok(config_manager.config().clone())
+    let mut config = state.config.lock().await;
+    config.load().map_err(|e| e.to_string())?;
+    Ok(config.config().clone())
 }
 
 #[tauri::command]
-pub fn save_config(config: Config, state: State<AppStateManager>) -> Result<(), String> {
-    info!("保存配置文件");
-    let mut config_manager = state.config_manager.lock().unwrap();
-    config_manager
+async fn save_config(data: Config, state: State<'_, AppStateManager>) -> Result<(), String> {
+    info!("保存配置文件 {:?}", data);
+    let mut config = state.config.lock().await;
+    config
         .update_config(|c| {
-            *c = config;
+            *c = data;
         })
         .map_err(|e| e.to_string())
 }
@@ -59,66 +62,63 @@ pub fn save_config(config: Config, state: State<AppStateManager>) -> Result<(), 
 // ========== 设备管理相关命令 ==========
 
 #[tauri::command]
-pub fn list_host_apis(state: State<AppStateManager>) -> Vec<String> {
+async fn list_host_apis(state: State<'_, AppStateManager>) -> Result<Vec<String>, String> {
     info!("列出音频主机API");
-    let gui_manager = state.gui_manager.lock().unwrap();
-    gui_manager.get_hostapis()
+    let gui = state.gui.lock().await;
+    Ok(gui.get_hostapis())
 }
 
 #[tauri::command]
-pub fn list_input_devices(
-    state: State<AppStateManager>,
-    host_api: Option<String>,
-) -> Vec<AudioDeviceInfo> {
-    info!("列出输入设备: {:?}", host_api);
-    let gui_manager = state.gui_manager.lock().unwrap();
-    gui_manager.get_input_devices(host_api.as_deref())
-}
-
-#[tauri::command]
-pub fn list_output_devices(
-    state: State<AppStateManager>,
-    host_api: Option<String>,
-) -> Vec<AudioDeviceInfo> {
-    info!("列出输出设备: {:?}", host_api);
-    let gui_manager = state.gui_manager.lock().unwrap();
-    gui_manager.get_output_devices(host_api.as_deref())
-}
-
-#[tauri::command]
-pub async fn reload_devices(
+async fn list_input_devices(
     state: State<'_, AppStateManager>,
     host_api: Option<String>,
+) -> Result<Vec<AudioDeviceInfo>, String> {
+    info!("列出输入设备: {:?}", host_api);
+    let gui = state.gui.lock().await;
+    Ok(gui.get_input_devices(host_api.as_deref()))
+}
+
+#[tauri::command]
+async fn list_output_devices(
+    state: State<'_, AppStateManager>,
+    host_api: Option<String>,
+) -> Result<Vec<AudioDeviceInfo>, String> {
+    info!("列出输出设备: {:?}", host_api);
+    let gui = state.gui.lock().await;
+    Ok(gui.get_output_devices(host_api.as_deref()))
+}
+
+#[tauri::command]
+async fn reload_devices(
+    state: State<'_, AppStateManager>,
+    host_api: Option<&str>,
 ) -> Result<(), String> {
     info!("重新加载设备列表");
-    let mut gui_manager = state.gui_manager.lock().unwrap();
-    gui_manager
-        .update_audio_devices(host_api.as_deref())
+    let mut gui = state.gui.lock().await;
+    gui.update_audio_devices(host_api)
         .await
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub fn get_device_samplerate(
-    state: State<AppStateManager>,
+async fn get_device_samplerate(
+    state: State<'_, AppStateManager>,
     device_name: String,
 ) -> Result<u32, String> {
-    let gui_manager = state.gui_manager.lock().unwrap();
-    gui_manager
-        .get_device_sample_rate(&device_name)
+    let gui = state.gui.lock().await;
+    gui.get_device_sample_rate(&device_name)
         .map(|rate| rate as u32)
         .ok_or_else(|| "设备未找到".to_string())
 }
 
 #[tauri::command]
-pub fn get_device_channels(
-    state: State<AppStateManager>,
+async fn get_device_channels(
+    state: State<'_, AppStateManager>,
     device_name: String,
     is_input: bool,
 ) -> Result<u32, String> {
-    let gui_manager = state.gui_manager.lock().unwrap();
-    gui_manager
-        .get_device_channels(&device_name, is_input)
+    let gui = state.gui.lock().await;
+    gui.get_device_channels(&device_name, is_input)
         .map(|channels| channels as u32)
         .ok_or_else(|| "设备未找到".to_string())
 }
@@ -126,47 +126,36 @@ pub fn get_device_channels(
 // ========== 语音转换控制命令 ==========
 
 #[tauri::command]
-pub async fn start_voice_conversion(state: State<'_, AppStateManager>) -> Result<(), String> {
+async fn start_voice_conversion(state: State<'_, AppStateManager>) -> Result<(), String> {
     info!("开始语音转换");
-
-    // 先验证配置
-    {
-        let gui_manager = state.gui_manager.lock().unwrap();
-        gui_manager.validate_config().map_err(|e| e.to_string())?;
-    }
-
-    // 开始转换
-    let mut gui_manager = state.gui_manager.lock().unwrap();
-    gui_manager
-        .start_voice_conversion()
+    let mut gui = state.gui.lock().await;
+    gui.validate_config().map_err(|e| e.to_string())?;
+    gui.start_voice_conversion()
         .await
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub async fn stop_voice_conversion(state: State<'_, AppStateManager>) -> Result<(), String> {
+async fn stop_voice_conversion(state: State<'_, AppStateManager>) -> Result<(), String> {
     info!("停止语音转换");
-    let mut gui_manager = state.gui_manager.lock().unwrap();
-    gui_manager
-        .stop_voice_conversion()
-        .await
-        .map_err(|e| e.to_string())
+    let mut gui = state.gui.lock().await;
+    gui.stop_voice_conversion().await.map_err(|e| e.to_string())
 }
 
 // ========== 参数更新命令 ==========
 
 #[tauri::command]
-pub fn update_parameter(
+async fn update_parameter(
     name: String,
     value: serde_json::Value,
-    state: State<AppStateManager>,
+    state: State<'_, AppStateManager>,
 ) -> Result<(), String> {
     info!("更新参数: {} = {:?}", name, value);
 
     // 尝试实时参数更新
     {
-        let mut gui_manager = state.gui_manager.lock().unwrap();
-        match gui_manager.update_realtime_parameter(&name, value.clone()) {
+        let mut gui = state.gui.lock().await;
+        match gui.update_realtime_parameter(&name, value.clone()) {
             Ok(()) => return Ok(()),
             Err(_) => {
                 // 如果实时更新失败，继续使用配置管理器更新
@@ -175,8 +164,8 @@ pub fn update_parameter(
     }
 
     // 配置文件更新
-    let mut config_manager = state.config_manager.lock().unwrap();
-    config_manager
+    let mut config = state.config.lock().await;
+    config
         .update_config(|config| {
             match name.as_str() {
                 "pitch" => {
@@ -253,10 +242,12 @@ pub fn update_parameter(
 // ========== 状态查询命令 ==========
 
 #[tauri::command]
-pub fn get_realtime_status(state: State<AppStateManager>) -> HashMap<String, serde_json::Value> {
-    let gui_manager = state.gui_manager.lock().unwrap();
-    let stats = gui_manager.get_stats();
-    let app_state = gui_manager.get_state();
+async fn get_realtime_status(
+    state: State<'_, AppStateManager>,
+) -> Result<HashMap<String, serde_json::Value>, String> {
+    let gui = state.gui.lock().await;
+    let stats = gui.get_stats();
+    let app_state = gui.get_state();
 
     let mut status = HashMap::new();
 
@@ -289,23 +280,21 @@ pub fn get_realtime_status(state: State<AppStateManager>) -> HashMap<String, ser
         status.insert("gpu_usage".to_string(), serde_json::json!(gpu_usage));
     }
 
-    status
+    Ok(status)
 }
 
 // ========== 应用初始化命令 ==========
 
 #[tauri::command]
-pub async fn initialize_app(state: State<'_, AppStateManager>) -> Result<(), String> {
+async fn initialize_app(state: State<'_, AppStateManager>) -> Result<(), String> {
     info!("初始化应用");
-
-    // 初始化 GUI 管理器
     {
-        let mut gui_manager = state.gui_manager.lock().unwrap();
-        gui_manager.initialize().await.map_err(|e| e.to_string())?;
+        let mut gui = state.gui.lock().await;
+        gui.initialize().await.map_err(|e| e.to_string())?;
     }
 
     // 加载配置
-    load_config(state)?;
+    load_config(state).await?;
 
     Ok(())
 }
@@ -333,7 +322,7 @@ pub fn run() {
             start_voice_conversion,
             stop_voice_conversion,
             update_parameter,
-            get_realtime_status,
+            get_realtime_status
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

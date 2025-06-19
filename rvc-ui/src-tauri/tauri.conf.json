@@ -30,6 +30,15 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "macOS": {
+      "frameworks": [
+        "/opt/homebrew/lib/libtorch.dylib",
+        "/opt/homebrew/lib/libtorch_cpu.dylib",
+        "/opt/homebrew/lib/libc10.dylib",
+        "/opt/homebrew/anaconda3/lib/libc++.1.dylib",
+        "/opt/homebrew/anaconda3/lib/libiconv.2.dylib"
+      ]
+    }
   }
 }
