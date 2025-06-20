@@ -1,7 +1,11 @@
 [package]
 name = "rvc-core"
-version = "0.3.2"
+version = "0.4.0"
 edition = "2021"
+
+[[example]]
+name = "event_system"
+path = "../examples/event_system.rs"
 
 [dependencies]
 # 深度学习框架 - 使用 download-libtorch 特性自动配置
@@ -31,6 +35,10 @@ env_logger = "0.10"
 # 实用工具
 uuid = { version = "1.0", features = ["v4"] }
 num_cpus = "1.0"
+# 事件系统
+tokio-util = "0.7"
+futures = "0.3"
+crossbeam-channel = "0.5"
 # 模型加载相关
 byteorder = "1.5"
 memmap2 = "0.9"

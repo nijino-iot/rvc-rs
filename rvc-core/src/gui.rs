@@ -4,77 +4,21 @@
 
 use crate::config::GuiConfig;
 use crate::error::{RvcError, RvcResult};
+use crate::events::{AppState, AudioDeviceInfo, EventManager, RuntimeStats};
 use crate::rtrvc::RVC;
 use crate::sd::{self, printt, AudioStream};
-use serde::{Deserialize, Serialize};
+
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tch::{Kind, Tensor};
 
-/// 音频设备信息
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AudioDeviceInfo {
-    /// 设备名称
-    pub name: String,
-    /// 设备索引
-    pub index: usize,
-    /// 主机API名称
-    pub hostapi_name: String,
-    /// 最大输入通道数
-    pub max_input_channels: u16,
-    /// 最大输出通道数
-    pub max_output_channels: u16,
-    /// 默认采样率
-    pub default_samplerate: f64,
-}
-
-/// 应用状态枚举
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub enum AppState {
-    /// 初始化状态
-    Initializing,
-    /// 就绪状态
-    Ready,
-    /// 转换中
-    Converting,
-    /// 错误状态
-    Error(String),
-    /// 停止状态
-    Stopped,
-}
-
-/// 运行时统计信息
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RuntimeStats {
-    /// 算法延迟（毫秒）
-    pub algorithm_latency_ms: f64,
-    /// 推理时间（毫秒）
-    pub inference_time_ms: f64,
-    /// 缓冲区使用率
-    pub buffer_usage: f32,
-    /// CPU使用率
-    pub cpu_usage: f32,
-    /// GPU使用率（可选）
-    pub gpu_usage: Option<f32>,
-}
-
-impl Default for RuntimeStats {
-    fn default() -> Self {
-        Self {
-            algorithm_latency_ms: 0.0,
-            inference_time_ms: 0.0,
-            buffer_usage: 0.0,
-            cpu_usage: 0.0,
-            gpu_usage: None,
-        }
-    }
-}
-
 /// GUI管理器，对应Python中的GUI类
 pub struct GuiManager {
     /// 配置管理器
     config_manager: crate::config::ConfigManager,
+    /// 事件管理器
+    event_manager: EventManager,
     /// RVC推理器
     model: Option<RVC>,
     /// 音频流管理器
@@ -139,8 +83,11 @@ impl GuiManager {
         let mut config_manager = crate::config::ConfigManager::new(config_path);
         config_manager.load()?;
 
+        let event_manager = EventManager::new(1000);
+
         let mut manager = Self {
             config_manager,
+            event_manager,
             model: None,
             audio_stream: None,
             audio_processor: None,
@@ -174,7 +121,30 @@ impl GuiManager {
         // 初始化设备信息
         manager.update_devices(None)?;
 
+        // 设置初始状态
+        tokio::spawn({
+            let event_manager = manager.event_manager.clone();
+            async move {
+                event_manager.update_state(AppState::Ready).await;
+            }
+        });
+
         Ok(manager)
+    }
+
+    /// 获取事件管理器
+    pub fn event_manager(&self) -> &EventManager {
+        &self.event_manager
+    }
+
+    /// 获取事件发布器
+    pub fn event_publisher(&self) -> crate::events::EventPublisher {
+        self.event_manager.publisher()
+    }
+
+    /// 订阅事件
+    pub fn subscribe_events(&self) -> crate::events::EventSubscriber {
+        self.event_manager.subscribe()
     }
 
     /// 设置配置值，对应Python GUI.set_values
@@ -226,6 +196,14 @@ impl GuiManager {
 
     /// 启动语音转换，对应Python GUI.start_vc
     pub fn start_vc(&mut self) -> RvcResult<()> {
+        // 发布状态变化事件：开始转换
+        tokio::spawn({
+            let event_manager = self.event_manager.clone();
+            async move {
+                event_manager.update_state(AppState::Converting).await;
+            }
+        });
+
         // 清空GPU缓存（如果使用GPU）
         if tch::Cuda::is_available() {
             // tch::Cuda::empty_cache(); // 注释掉因为方法不存在
@@ -349,6 +327,29 @@ impl GuiManager {
         // 7. 启动音频流
         self.start_stream()?;
 
+        // 发布初始统计信息
+        let stats = RuntimeStats {
+            algorithm_latency_ms: 0.0,
+            inference_time_ms: 0.0,
+            buffer_usage: 0.0,
+            cpu_usage: 0.0,
+            gpu_usage: if tch::Cuda::is_available() {
+                Some(0.0)
+            } else {
+                None
+            },
+            memory_usage_mb: 0.0,
+            processed_frames: 0,
+            dropped_frames: 0,
+        };
+
+        tokio::spawn({
+            let event_manager = self.event_manager.clone();
+            async move {
+                event_manager.update_stats(stats).await;
+            }
+        });
+
         Ok(())
     }
 
@@ -411,17 +412,18 @@ impl GuiManager {
         // 创建音频处理器
         let audio_processor = Arc::new(Mutex::new(AudioProcessor::new(
             self.config_manager.gui_config().clone(),
+            self.event_manager.clone(),
             None, // TODO: 传递模型
             self.function.clone(),
-            self.zc as i32,
-            self.block_frame as i32,
-            self.block_frame_16k as i32,
-            self.crossfade_frame as i32,
-            self.sola_buffer_frame as i32,
-            self.sola_search_frame as i32,
-            self.extra_frame as i32,
-            self.skip_head as i32,
-            self.return_length as i32,
+            self.zc,
+            self.block_frame,
+            self.block_frame_16k,
+            self.crossfade_frame,
+            self.sola_buffer_frame,
+            self.sola_search_frame,
+            self.extra_frame,
+            self.skip_head,
+            self.return_length,
         )?));
 
         let processor_clone = Arc::clone(&audio_processor);
@@ -523,6 +525,15 @@ impl GuiManager {
             log::info!("Audio stream stopped");
         }
         self.audio_stream = None;
+
+        // 发布状态变化事件：停止转换
+        tokio::spawn({
+            let event_manager = self.event_manager.clone();
+            async move {
+                event_manager.update_state(AppState::Ready).await;
+            }
+        });
+
         Ok(())
     }
 
@@ -539,17 +550,48 @@ impl GuiManager {
         let (input_names, input_indices, output_names, output_indices) =
             sd::get_devices_for_hostapi(selected_hostapi)?;
 
-        self.input_devices = input_names;
+        self.input_devices = input_names.clone();
         self.input_devices_indices = input_indices
             .into_iter()
             .map(|s| s.parse().unwrap_or(0))
             .collect();
 
-        self.output_devices = output_names;
+        self.output_devices = output_names.clone();
         self.output_devices_indices = output_indices
             .into_iter()
             .map(|s| s.parse().unwrap_or(0))
             .collect();
+
+        // 构建设备信息并发布设备更新事件
+        let input_device_infos: Vec<AudioDeviceInfo> = input_names
+            .iter()
+            .zip(self.input_devices_indices.iter())
+            .map(|(name, &index)| AudioDeviceInfo {
+                name: name.clone(),
+                index,
+                hostapi_name: selected_hostapi.to_string(),
+                max_input_channels: 2, // 默认值，实际应从设备查询
+                max_output_channels: 0,
+                default_samplerate: 48000.0, // 默认值，实际应从设备查询
+            })
+            .collect();
+
+        let output_device_infos: Vec<AudioDeviceInfo> = output_names
+            .iter()
+            .zip(self.output_devices_indices.iter())
+            .map(|(name, &index)| AudioDeviceInfo {
+                name: name.clone(),
+                index,
+                hostapi_name: selected_hostapi.to_string(),
+                max_input_channels: 0,
+                max_output_channels: 2,      // 默认值，实际应从设备查询
+                default_samplerate: 48000.0, // 默认值，实际应从设备查询
+            })
+            .collect();
+
+        // 发布设备更新事件
+        self.event_manager
+            .publish_devices_updated(input_device_infos, output_device_infos);
 
         Ok(())
     }
@@ -624,172 +666,23 @@ impl GuiManager {
 
         mono
     }
-
-    // ========== 为 Tauri 添加的方法 ==========
-
-    /// 获取主机API列表
-    pub fn get_hostapis(&self) -> Vec<String> {
-        self.hostapis.clone()
-    }
-
-    /// 获取输入设备列表
-    pub fn get_input_devices(&self, host_api: Option<&str>) -> Vec<AudioDeviceInfo> {
-        // 如果指定了主机API，则重新更新设备列表
-        if let Some(api) = host_api {
-            // 这里简化实现，实际应该根据主机API过滤
-            self.input_devices
-                .iter()
-                .enumerate()
-                .map(|(i, name)| AudioDeviceInfo {
-                    name: name.clone(),
-                    index: i,
-                    hostapi_name: api.to_string(),
-                    max_input_channels: 2,
-                    max_output_channels: 0,
-                    default_samplerate: 48000.0,
-                })
-                .collect()
-        } else {
-            self.input_devices
-                .iter()
-                .enumerate()
-                .map(|(i, name)| AudioDeviceInfo {
-                    name: name.clone(),
-                    index: i,
-                    hostapi_name: "default".to_string(),
-                    max_input_channels: 2,
-                    max_output_channels: 0,
-                    default_samplerate: 48000.0,
-                })
-                .collect()
-        }
-    }
-
-    /// 获取输出设备列表
-    pub fn get_output_devices(&self, host_api: Option<&str>) -> Vec<AudioDeviceInfo> {
-        // 如果指定了主机API，则重新更新设备列表
-        if let Some(api) = host_api {
-            self.output_devices
-                .iter()
-                .enumerate()
-                .map(|(i, name)| AudioDeviceInfo {
-                    name: name.clone(),
-                    index: i,
-                    hostapi_name: api.to_string(),
-                    max_input_channels: 0,
-                    max_output_channels: 2,
-                    default_samplerate: 48000.0,
-                })
-                .collect()
-        } else {
-            self.output_devices
-                .iter()
-                .enumerate()
-                .map(|(i, name)| AudioDeviceInfo {
-                    name: name.clone(),
-                    index: i,
-                    hostapi_name: "default".to_string(),
-                    max_input_channels: 0,
-                    max_output_channels: 2,
-                    default_samplerate: 48000.0,
-                })
-                .collect()
-        }
-    }
-
-    /// 异步更新音频设备
-    pub async fn update_audio_devices(&mut self, host_api: Option<&str>) -> RvcResult<()> {
-        self.update_devices(host_api)
-    }
-
-    /// 获取设备采样率（简化实现）
-    pub fn get_device_sample_rate_simple(&self, _device_name: &str) -> Option<f64> {
-        // 简化实现，返回默认采样率
-        Some(48000.0)
-    }
-
-    /// 获取设备通道数（简化实现）
-    pub fn get_device_channels_simple(&self, _device_name: &str, _is_input: bool) -> Option<u32> {
-        // 简化实现，返回立体声
-        Some(2)
-    }
-
-    /// 验证配置
-    pub fn validate_config(&self) -> RvcResult<()> {
-        // 简化实现，总是返回成功
-        Ok(())
-    }
-
-    /// 异步启动语音转换
-    pub async fn start_vc_async(&mut self) -> RvcResult<()> {
-        self.start_vc()
-    }
-
-    /// 异步停止语音转换
-    pub async fn stop_voice_conversion(&mut self) -> RvcResult<()> {
-        // 停止音频流
-        if let Some(_stream) = &mut self.audio_stream {
-            // 停止流
-        }
-        self.audio_stream = None;
-        Ok(())
-    }
-
-    /// 更新实时参数
-    pub fn update_realtime_parameter(
-        &mut self,
-        name: &str,
-        value: serde_json::Value,
-    ) -> RvcResult<()> {
-        self.config_manager.update_gui_config(|config| {
-            // 使用统一的字段更新方法
-            let errors = config.update_field_from_json(name, value.clone());
-            if !errors.is_empty() {
-                log::warn!(
-                    "实时参数更新验证警告: {} = {:?}, 错误: {:?}",
-                    name,
-                    value,
-                    errors
-                );
-                // 对于实时参数更新，我们记录警告但不阻止操作
-            }
-        })
-    }
-
-    /// 获取运行时统计信息
-    pub fn get_stats(&self) -> RuntimeStats {
-        RuntimeStats::default()
-    }
-
-    /// 获取应用状态
-    pub fn get_state(&self) -> AppState {
-        if self.audio_stream.is_some() {
-            AppState::Converting
-        } else {
-            AppState::Ready
-        }
-    }
-
-    /// 异步初始化
-    pub async fn initialize(&mut self) -> RvcResult<()> {
-        Ok(())
-    }
 }
 
 /// 音频处理器，用于处理实时音频回调
 pub struct AudioProcessor {
     gui_config: GuiConfig,
+    event_manager: EventManager,
     model: Option<RVC>,
     function: String,
-    zc: i32,
-    block_frame: i32,
-    block_frame_16k: i32,
-    crossfade_frame: i32,
-    sola_buffer_frame: i32,
-    sola_search_frame: i32,
-    extra_frame: i32,
-    skip_head: i32,
-    return_length: i32,
+    zc: u32,
+    block_frame: u32,
+    block_frame_16k: u32,
+    crossfade_frame: u32,
+    sola_buffer_frame: u32,
+    sola_search_frame: u32,
+    extra_frame: u32,
+    skip_head: u32,
+    return_length: u32,
     input_wav: Option<Tensor>,
     input_wav_denoise: Option<Tensor>,
     input_wav_res: Option<Tensor>,
@@ -804,23 +697,25 @@ pub struct AudioProcessor {
 impl AudioProcessor {
     pub fn new(
         gui_config: GuiConfig,
+        event_manager: EventManager,
         model: Option<RVC>,
         function: String,
-        zc: i32,
-        block_frame: i32,
-        block_frame_16k: i32,
-        crossfade_frame: i32,
-        sola_buffer_frame: i32,
-        sola_search_frame: i32,
-        extra_frame: i32,
-        skip_head: i32,
-        return_length: i32,
+        zc: u32,
+        block_frame: u32,
+        block_frame_16k: u32,
+        crossfade_frame: u32,
+        sola_buffer_frame: u32,
+        sola_search_frame: u32,
+        extra_frame: u32,
+        skip_head: u32,
+        return_length: u32,
     ) -> RvcResult<Self> {
         let device = tch::Device::Cpu; // TODO: 从配置中获取设备
 
         // 初始化音频缓冲区
         let total_wav_len = (48000.0 * 3.0) as i64;
         let input_wav = Some(Tensor::zeros(&[total_wav_len], (tch::Kind::Float, device)));
+        let input_wav_denoise = Some(Tensor::zeros(&[total_wav_len], (tch::Kind::Float, device)));
 
         let total_wav_res_len = (16000.0 * 3.0) as i64;
         let input_wav_res = Some(Tensor::zeros(
@@ -854,6 +749,7 @@ impl AudioProcessor {
 
         Ok(Self {
             gui_config,
+            event_manager,
             model,
             function,
             zc,
@@ -866,7 +762,7 @@ impl AudioProcessor {
             skip_head,
             return_length,
             input_wav,
-            input_wav_denoise: None,
+            input_wav_denoise,
             input_wav_res,
             rms_buffer,
             sola_buffer,
@@ -1161,6 +1057,20 @@ impl AudioProcessor {
         // 记录推理时间
         let inference_time = start_time.elapsed().as_millis();
         log::debug!("Inference time: {}ms", inference_time);
+
+        // 发布实时统计信息
+        let delay_time = inference_time as f64;
+        let buffer_usage = if outdata.len() > 0 {
+            output_data.len() as f32 / outdata.len() as f32
+        } else {
+            0.0
+        };
+
+        self.event_manager.publish_audio_processing(
+            delay_time,
+            inference_time as f64,
+            buffer_usage.min(1.0),
+        );
 
         Ok(())
     }

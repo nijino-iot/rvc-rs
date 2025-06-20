@@ -7,7 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2024-01-10
+
 ### Added
+- **Event-Driven Architecture**: Complete event system implementation
+  - Added `events.rs` module with comprehensive event management
+  - Added `EventManager` for centralized event publishing and subscription
+  - Added `AppEvent` enum with 7 event types (StateChanged, StatsUpdated, DevicesUpdated, etc.)
+  - Added `EventPublisher` and `EventSubscriber` for async event handling
+  - Added `StatsCollector` for periodic system statistics gathering
+  - Added comprehensive unit tests for event system components
+
 - **Harvest F0 Extraction**: Implemented pyworld.harvest equivalent using rsworld
   - Added `world_f0.rs` module with complete Harvest algorithm support
   - Added `WorldF0Extractor` for single-threaded F0 extraction
@@ -18,6 +28,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Full compatibility with Python rtrvc.py and gui_v1.py harvest calls
 
 ### Changed
+- **Frontend Architecture**: Migrated from polling to event-driven model
+  - Removed `setInterval` status polling (every 100ms) from Vue frontend
+  - Replaced with real-time event listeners for state/stats/device updates
+  - Added 8 event listeners: state-changed, stats-updated, audio-processing, etc.
+  - Improved UI responsiveness with immediate state updates
+  - Reduced CPU usage by eliminating unnecessary polling requests
+
+- **Tauri Integration**: Redesigned for thread-safe event handling
+  - Removed direct `GuiManager` storage from `AppStateManager` (thread safety)
+  - Added event forwarding from core to frontend via Tauri events
+  - Implemented async event listener with error recovery
+  - Added event-to-UI mapping for all core events
+  - Maintained backward compatibility with deprecated `get_realtime_status`
+
 - **Core Module Migration**: Replaced `rvc_model.rs` with `rtrvc.rs`
   - Migrated from `RvcRealtimeModel` to `RVC` struct based on Python `rtrvc.py`
   - Updated `GuiManager` to use new `RVC` struct instead of `RvcRealtimeModel`
@@ -25,7 +49,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Updated tensor operations to use `tch` crate directly
   - Improved F0 extraction method handling with proper enum mapping
 
+- **GUI Manager Enhancement**: Integrated event publishing throughout
+  - Added event notifications for start/stop voice conversion
+  - Added real-time audio processing statistics publishing
+  - Added device list update events with detailed device information
+  - Unified type definitions by using events module types
+
 ### Removed
+- **Polling System**: Eliminated inefficient status polling
+  - Removed frontend `setInterval` timer for status updates
+  - Removed `startStatusMonitoring` and `stopStatusMonitoring` functions
+  - Removed direct `get_realtime_status` calls from UI update cycle
+  - Removed redundant state management in frontend components
+
 - **Legacy Model**: Removed `rvc_model.rs` module
   - Removed `RvcVersion` enum
   - Removed `RvcCheckpoint` struct
@@ -33,6 +69,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Removed `RvcRealtimeModel` struct with complex caching system
   - Removed `RvcModelManager` struct
   - Removed `IndexInfo` struct
+
+### Performance Improvements
+- **Real-time Responsiveness**: Event-driven updates provide immediate feedback
+  - Eliminated 100ms polling delay for state changes
+  - Reduced CPU usage from continuous status checks
+  - Improved memory efficiency with on-demand event generation
+  - Enhanced user experience with instant UI updates
+
+### Breaking Changes
+- **API Changes**: Event system requires frontend migration
+  - Frontend must use event listeners instead of polling `get_realtime_status`
+  - `GuiManager` is no longer directly accessible from Tauri state
+  - Event subscription API replaces direct state queries
+
+### Migration Guide
+- **Frontend Migration**: Replace polling with event listeners
+  ```javascript
+  // Old (deprecated)
+  setInterval(() => invoke("get_realtime_status"), 100);
+  
+  // New (recommended)
+  await listen("state-changed", (event) => { /* handle */ });
+  await listen("audio-processing", (event) => { /* handle */ });
+  ```
 
 ### Added
 - **New RVC Implementation**: Added `rtrvc.rs` based on Python `infer/lib/rtrvc.py`

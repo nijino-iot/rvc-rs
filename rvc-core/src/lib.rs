@@ -5,6 +5,7 @@
 
 pub mod config;
 pub mod error;
+pub mod events;
 pub mod f0;
 pub mod gui;
 pub mod pytorch_loader;
@@ -17,8 +18,12 @@ pub mod utils;
 // 重新导出主要类型和函数（避免重复导出）
 pub use config::{Config, ConfigManager, GuiConfig};
 pub use error::*;
+pub use events::{
+    AppEvent, AppState, AudioDeviceInfo, EventManager, EventPublisher, EventSubscriber,
+    RuntimeStats, StatsCollector,
+};
 pub use f0::*;
-pub use gui::{AppState, AudioDeviceInfo, GuiManager, RuntimeStats};
+pub use gui::GuiManager;
 pub use pytorch_loader::*;
 pub use rtrvc::*;
 pub use sd::{printt, AudioStream, DeviceInfo, HostApiInfo};
