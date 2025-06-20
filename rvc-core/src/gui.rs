@@ -6,15 +6,75 @@ use crate::config::{Config, GuiConfig};
 use crate::error::{RvcError, RvcResult};
 use crate::rtrvc::RVC;
 use crate::sd::{self, printt, AudioStream};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::path::PathBuf;
 use std::time::Instant;
 use tch::{Device, Kind, Tensor};
 
+/// 音频设备信息
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AudioDeviceInfo {
+    /// 设备名称
+    pub name: String,
+    /// 设备索引
+    pub index: usize,
+    /// 主机API名称
+    pub hostapi_name: String,
+    /// 最大输入通道数
+    pub max_input_channels: u16,
+    /// 最大输出通道数
+    pub max_output_channels: u16,
+    /// 默认采样率
+    pub default_samplerate: f64,
+}
+
+/// 应用状态枚举
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum AppState {
+    /// 初始化状态
+    Initializing,
+    /// 就绪状态
+    Ready,
+    /// 转换中
+    Converting,
+    /// 错误状态
+    Error(String),
+    /// 停止状态
+    Stopped,
+}
+
+/// 运行时统计信息
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RuntimeStats {
+    /// 算法延迟（毫秒）
+    pub algorithm_latency_ms: f64,
+    /// 推理时间（毫秒）
+    pub inference_time_ms: f64,
+    /// 缓冲区使用率
+    pub buffer_usage: f32,
+    /// CPU使用率
+    pub cpu_usage: f32,
+    /// GPU使用率（可选）
+    pub gpu_usage: Option<f32>,
+}
+
+impl Default for RuntimeStats {
+    fn default() -> Self {
+        Self {
+            algorithm_latency_ms: 0.0,
+            inference_time_ms: 0.0,
+            buffer_usage: 0.0,
+            cpu_usage: 0.0,
+            gpu_usage: None,
+        }
+    }
+}
+
 /// GUI管理器，对应Python中的GUI类
 pub struct GuiManager {
-    /// GUI配置
-    gui_config: GuiConfig,
-    /// 核心配置
-    config: Config,
+    /// 配置管理器
+    config_manager: crate::config::ConfigManager,
     /// RVC推理器
     model: Option<RVC>,
     /// 音频流管理器
@@ -73,13 +133,12 @@ pub struct GuiManager {
 
 impl GuiManager {
     /// 创建新的GUI管理器，对应Python GUI.__init__
-    pub fn new() -> RvcResult<Self> {
-        let gui_config = GuiConfig::default();
-        let config = Config::default();
+    pub fn new(config_path: PathBuf) -> RvcResult<Self> {
+        let mut config_manager = crate::config::ConfigManager::new(config_path);
+        config_manager.load()?;
 
         let mut manager = Self {
-            gui_config,
-            config,
+            config_manager,
             model: None,
             audio_stream: None,
             delay_time: 0.0,
@@ -121,8 +180,8 @@ impl GuiManager {
         if values.pth_path.is_empty() {
             return Err(RvcError::other("请选择pth文件"));
         }
-        if values.index_path.is_empty() {
-            return Err(RvcError::other("请选择index文件"));
+        if !std::path::Path::new(&values.pth_path).exists() {
+            return Err(RvcError::other("pth文件不存在"));
         }
 
         // 检查路径中是否包含非ASCII字符
@@ -133,11 +192,17 @@ impl GuiManager {
             return Err(RvcError::other("index文件路径不可包含中文"));
         }
 
+        // 克隆需要的字段以避免移动
+        let input_device = values.sg_input_device.clone();
+        let output_device = values.sg_output_device.clone();
+
         // 设置设备
-        self.set_devices(&values.sg_input_device, &values.sg_output_device)?;
+        self.set_devices(&input_device, &output_device)?;
 
         // 更新配置
-        self.gui_config = values;
+        self.config_manager.update_gui_config(|config| {
+            *config = values;
+        })?;
 
         Ok(true)
     }
@@ -150,63 +215,66 @@ impl GuiManager {
         }
 
         // 1. 创建RVC推理器，对应Python的RVC初始化
-        let device = if self.config.device.contains("cuda") {
-            Device::Cuda(0)
+        let gui_config = self.config_manager.gui_config();
+        let config = self.config_manager.config();
+
+        let device = if config.device.contains("cuda") {
+            tch::Device::Cuda(0)
         } else {
-            Device::Cpu
+            tch::Device::Cpu
         };
 
         self.model = Some(RVC::new(
-            self.gui_config.pitch,
-            self.gui_config.formant,
-            &self.gui_config.pth_path,
-            if self.gui_config.index_path.is_empty() {
+            gui_config.pitch,
+            gui_config.formant,
+            &gui_config.pth_path,
+            if gui_config.index_path.is_empty() {
                 None
             } else {
-                Some(&self.gui_config.index_path)
+                Some(&gui_config.index_path)
             },
-            self.gui_config.index_rate,
-            self.gui_config.n_cpu as i32,
-            self.config.clone(),
+            gui_config.index_rate,
+            gui_config.n_cpu as i32,
+            config.clone(),
             None,
         )?);
 
         // 2. 确定采样率和通道数
         let rvc_ref = self.model.as_ref().unwrap();
-        let sample_rate = if self.gui_config.sr_type == "sr_model" {
+        let sample_rate = if gui_config.sr_type == "sr_model" {
             rvc_ref.tgt_sr as u32
         } else {
-            self.get_device_sample_rate(&self.gui_config.sg_output_device)
+            self.get_device_sample_rate(&gui_config.sg_output_device)
                 .unwrap_or(48000.0) as u32
         };
 
         let channels = self
-            .get_device_channels(&self.gui_config.sg_output_device)
+            .get_device_channels(&gui_config.sg_output_device)
             .unwrap_or(2) as u32;
 
         // 3. 计算各种帧大小参数，对应Python中的计算逻辑
         self.zc = sample_rate / 100; // 每10ms的采样数
 
         // 块帧数：对zc进行舍入处理
-        self.block_frame = ((self.gui_config.block_time * sample_rate as f32 / self.zc as f32)
-            .round() as u32)
+        self.block_frame = ((gui_config.block_time * sample_rate as f32 / self.zc as f32).round()
+            as u32)
             * self.zc;
 
         // 16k采样率下的块帧数
         self.block_frame_16k = 160 * self.block_frame / self.zc;
 
         // 交叉淡化帧数
-        self.crossfade_frame =
-            ((self.gui_config.crossfade_time * sample_rate as f32 / self.zc as f32).round() as u32)
-                * self.zc;
+        self.crossfade_frame = ((gui_config.crossfade_time * sample_rate as f32 / self.zc as f32)
+            .round() as u32)
+            * self.zc;
 
         // SOLA缓冲帧数，取交叉淡化帧数和4*zc的最小值
         self.sola_buffer_frame = self.crossfade_frame.min(4 * self.zc);
         self.sola_search_frame = self.zc;
 
         // 额外帧数
-        self.extra_frame = ((self.gui_config.extra_time * sample_rate as f32 / self.zc as f32)
-            .round() as u32)
+        self.extra_frame = ((gui_config.extra_time * sample_rate as f32 / self.zc as f32).round()
+            as u32)
             * self.zc;
 
         // 4. 初始化张量缓冲区，对应Python中的张量初始化
@@ -264,7 +332,8 @@ impl GuiManager {
 
     /// 启动音频流，对应Python GUI.start_stream
     pub fn start_stream(&mut self) -> RvcResult<()> {
-        let sample_rate = if self.gui_config.sr_type == "sr_model" {
+        let gui_config = self.config_manager.gui_config();
+        let sample_rate = if gui_config.sr_type == "sr_model" {
             if let Some(rvc) = &self.model {
                 rvc.tgt_sr as u32
             } else {
@@ -315,7 +384,8 @@ impl GuiManager {
         let mono_input = self.to_mono(indata);
 
         // 2. 应用阈值门控（如果启用）
-        let processed_input = if self.gui_config.threshold > -60.0 {
+        let gui_config = self.config_manager.gui_config();
+        let processed_input = if gui_config.threshold > -60.0 {
             mono_input // 暂时移除阈值门控，待实现
         } else {
             mono_input
@@ -347,7 +417,7 @@ impl GuiManager {
         let infer_result = if self.function == "vc" {
             if let (Some(rvc), Some(input_wav_res)) = (&mut self.model, &self.input_wav_res) {
                 use crate::f0::F0Method;
-                let f0_method = match self.gui_config.f0method.as_str() {
+                let f0_method = match gui_config.f0method.as_str() {
                     "harvest" => F0Method::Harvest,
                     "pm" => F0Method::Pm,
                     "crepe" => F0Method::Crepe,
@@ -494,5 +564,207 @@ impl GuiManager {
         }
 
         mono
+    }
+
+    // ========== 为 Tauri 添加的方法 ==========
+
+    /// 获取主机API列表
+    pub fn get_hostapis(&self) -> Vec<String> {
+        self.hostapis.clone()
+    }
+
+    /// 获取输入设备列表
+    pub fn get_input_devices(&self, host_api: Option<&str>) -> Vec<AudioDeviceInfo> {
+        // 如果指定了主机API，则重新更新设备列表
+        if let Some(api) = host_api {
+            // 这里简化实现，实际应该根据主机API过滤
+            self.input_devices
+                .iter()
+                .enumerate()
+                .map(|(i, name)| AudioDeviceInfo {
+                    name: name.clone(),
+                    index: i,
+                    hostapi_name: api.to_string(),
+                    max_input_channels: 2,
+                    max_output_channels: 0,
+                    default_samplerate: 48000.0,
+                })
+                .collect()
+        } else {
+            self.input_devices
+                .iter()
+                .enumerate()
+                .map(|(i, name)| AudioDeviceInfo {
+                    name: name.clone(),
+                    index: i,
+                    hostapi_name: "default".to_string(),
+                    max_input_channels: 2,
+                    max_output_channels: 0,
+                    default_samplerate: 48000.0,
+                })
+                .collect()
+        }
+    }
+
+    /// 获取输出设备列表
+    pub fn get_output_devices(&self, host_api: Option<&str>) -> Vec<AudioDeviceInfo> {
+        // 如果指定了主机API，则重新更新设备列表
+        if let Some(api) = host_api {
+            self.output_devices
+                .iter()
+                .enumerate()
+                .map(|(i, name)| AudioDeviceInfo {
+                    name: name.clone(),
+                    index: i,
+                    hostapi_name: api.to_string(),
+                    max_input_channels: 0,
+                    max_output_channels: 2,
+                    default_samplerate: 48000.0,
+                })
+                .collect()
+        } else {
+            self.output_devices
+                .iter()
+                .enumerate()
+                .map(|(i, name)| AudioDeviceInfo {
+                    name: name.clone(),
+                    index: i,
+                    hostapi_name: "default".to_string(),
+                    max_input_channels: 0,
+                    max_output_channels: 2,
+                    default_samplerate: 48000.0,
+                })
+                .collect()
+        }
+    }
+
+    /// 异步更新音频设备
+    pub async fn update_audio_devices(&mut self, host_api: Option<&str>) -> RvcResult<()> {
+        self.update_devices(host_api)
+    }
+
+    /// 获取设备采样率（简化实现）
+    pub fn get_device_sample_rate_simple(&self, device_name: &str) -> Option<f64> {
+        // 简化实现，返回默认采样率
+        Some(48000.0)
+    }
+
+    /// 获取设备通道数（简化实现）
+    pub fn get_device_channels_simple(&self, device_name: &str, is_input: bool) -> Option<u32> {
+        // 简化实现，返回立体声
+        Some(2)
+    }
+
+    /// 验证配置
+    pub fn validate_config(&self) -> RvcResult<()> {
+        // 简化实现，总是返回成功
+        Ok(())
+    }
+
+    /// 异步启动语音转换
+    pub async fn start_vc_async(&mut self) -> RvcResult<()> {
+        self.start_vc()
+    }
+
+    /// 异步停止语音转换
+    pub async fn stop_voice_conversion(&mut self) -> RvcResult<()> {
+        // 停止音频流
+        if let Some(_stream) = &mut self.audio_stream {
+            // 停止流
+        }
+        self.audio_stream = None;
+        Ok(())
+    }
+
+    /// 更新实时参数
+    pub fn update_realtime_parameter(
+        &mut self,
+        name: &str,
+        value: serde_json::Value,
+    ) -> RvcResult<()> {
+        self.config_manager.update_gui_config(|config| match name {
+            "pitch" => {
+                if let Some(v) = value.as_i64() {
+                    config.pitch = v as i32;
+                }
+            }
+            "formant" => {
+                if let Some(v) = value.as_f64() {
+                    config.formant = v as f32;
+                }
+            }
+            "index_rate" => {
+                if let Some(v) = value.as_f64() {
+                    config.index_rate = v as f32;
+                }
+            }
+            "rms_mix_rate" => {
+                if let Some(v) = value.as_f64() {
+                    config.rms_mix_rate = v as f32;
+                }
+            }
+            "threshold" => {
+                if let Some(v) = value.as_f64() {
+                    config.threshold = v as f32;
+                }
+            }
+            "f0method" => {
+                if let Some(v) = value.as_str() {
+                    config.f0method = v.to_string();
+                }
+            }
+            "sr_type" => {
+                if let Some(v) = value.as_str() {
+                    config.sr_type = v.to_string();
+                }
+            }
+            "block_time" => {
+                if let Some(v) = value.as_f64() {
+                    config.block_time = v as f32;
+                }
+            }
+            "crossfade_time" => {
+                if let Some(v) = value.as_f64() {
+                    config.crossfade_time = v as f32;
+                }
+            }
+            "extra_time" => {
+                if let Some(v) = value.as_f64() {
+                    config.extra_time = v as f32;
+                }
+            }
+            "n_cpu" => {
+                if let Some(v) = value.as_i64() {
+                    config.n_cpu = v as usize;
+                }
+            }
+            "use_pv" => {
+                if let Some(v) = value.as_bool() {
+                    config.use_pv = v;
+                }
+            }
+            _ => {}
+        })?;
+        Ok(())
+    }
+
+    /// 获取运行时统计信息
+    pub fn get_stats(&self) -> RuntimeStats {
+        RuntimeStats::default()
+    }
+
+    /// 获取应用状态
+    pub fn get_state(&self) -> AppState {
+        if self.audio_stream.is_some() {
+            AppState::Converting
+        } else {
+            AppState::Ready
+        }
+    }
+
+    /// 异步初始化
+    pub async fn initialize(&mut self) -> RvcResult<()> {
+        self.update_devices(None)?;
+        Ok(())
     }
 }

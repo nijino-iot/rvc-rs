@@ -5,6 +5,7 @@
 use crate::config::Config;
 use crate::error::RvcError;
 use crate::f0::F0Method;
+use crate::world_f0::extract_f0_harvest_simple;
 use log::info;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -359,13 +360,24 @@ impl RVC {
             F0Method::Rmvpe => self.get_f0_rmvpe(x, f0_up_key),
             F0Method::Fcpe => self.get_f0_fcpe(x, f0_up_key),
             F0Method::Harvest => {
-                // 简化的 Harvest 实现
-                let f0_values = vec![100.0; (x.size()[0] / 160) as usize]; // 占位数据
-                let f0_shifted: Vec<f32> = f0_values
-                    .iter()
-                    .map(|&f| f * (2.0_f32.powf(f0_up_key as f32 / 12.0)))
+                // 使用 rsworld 实现的 Harvest 算法
+                let x_cpu = x.to_device(Device::Cpu);
+                let audio_data: Vec<f64> = Vec::try_from(x_cpu)
+                    .map_err(|e| {
+                        RvcError::F0Error(format!("Failed to convert tensor to Vec: {:?}", e))
+                    })?
+                    .into_iter()
+                    .map(|x: f32| x as f64)
                     .collect();
-                let f0_tensor = Tensor::from_slice(&f0_shifted).to_device(self.device);
+
+                let f0_f64 =
+                    extract_f0_harvest_simple(&audio_data, 16000.0, f0_up_key, _n_cpu as usize)
+                        .map_err(|e| {
+                            RvcError::F0Error(format!("Harvest F0 extraction failed: {}", e))
+                        })?;
+
+                let f0_f32: Vec<f32> = f0_f64.iter().map(|&x| x as f32).collect();
+                let f0_tensor = Tensor::from_slice(&f0_f32).to_device(self.device);
                 self.get_f0_post(&f0_tensor)
             }
             F0Method::Pm => {

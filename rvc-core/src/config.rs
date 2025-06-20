@@ -195,6 +195,7 @@ impl GuiConfig {
 
 /// RVC 系统配置结构体，对应 Python configs/config.py 中的 Config 类
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Config {
     /// 设备类型 (cuda:0, cpu等)
     pub device: String,
@@ -229,6 +230,59 @@ pub struct Config {
     pub x_query: usize,
     pub x_center: usize,
     pub x_max: usize,
+
+    // GUI 相关的配置字段，保持与现有 JSON 兼容
+    /// 模型文件路径
+    #[serde(default)]
+    pub pth_path: Option<String>,
+    /// 索引文件路径
+    #[serde(default)]
+    pub index_path: Option<String>,
+    /// 音调设置
+    #[serde(default)]
+    pub pitch: Option<i32>,
+    /// 性别因子/声线粗细
+    #[serde(default)]
+    pub formant: Option<f32>,
+    /// 采样率类型
+    #[serde(default)]
+    pub sr_type: Option<String>,
+    /// 采样长度
+    #[serde(default)]
+    pub block_time: Option<f32>,
+    /// 响应阈值 (注意: Python中拼写错误为threhold)
+    #[serde(default, alias = "threhold")]
+    pub threshold: Option<f32>,
+    /// 淡入淡出长度
+    #[serde(default, alias = "crossfade_length")]
+    pub crossfade_time: Option<f32>,
+    /// 额外推理时长
+    #[serde(default)]
+    pub extra_time: Option<f32>,
+    /// 响度因子
+    #[serde(default)]
+    pub rms_mix_rate: Option<f32>,
+    /// Index Rate
+    #[serde(default)]
+    pub index_rate: Option<f32>,
+    /// F0 方法
+    #[serde(default)]
+    pub f0method: Option<String>,
+    /// 主机API
+    #[serde(default)]
+    pub sg_hostapi: Option<String>,
+    /// WASAPI独占
+    #[serde(default, alias = "sg_wasapi_exclusive")]
+    pub wasapi_exclusive: Option<bool>,
+    /// 输入设备名称
+    #[serde(default)]
+    pub sg_input_device: Option<String>,
+    /// 输出设备名称
+    #[serde(default)]
+    pub sg_output_device: Option<String>,
+    /// 是否启用相位声码器
+    #[serde(default)]
+    pub use_pv: Option<bool>,
 }
 
 impl Default for Config {
@@ -252,6 +306,24 @@ impl Default for Config {
             x_query: 10,
             x_center: 60,
             x_max: 65,
+            // GUI 字段默认为 None，在需要时转换为 GuiConfig
+            pth_path: None,
+            index_path: None,
+            pitch: None,
+            formant: None,
+            sr_type: None,
+            block_time: None,
+            threshold: None,
+            crossfade_time: None,
+            extra_time: None,
+            rms_mix_rate: None,
+            index_rate: None,
+            f0method: None,
+            sg_hostapi: None,
+            wasapi_exclusive: None,
+            sg_input_device: None,
+            sg_output_device: None,
+            use_pv: None,
         }
     }
 }
@@ -271,9 +343,48 @@ impl Config {
             .map_err(|e| RvcError::config(format!("配置文件格式错误: {}", e)))?;
 
         // 更新派生值
-        // config.update_derived_values();
+        config.update_derived_values();
 
         Ok(config)
+    }
+
+    /// 更新派生的配置值
+    pub fn update_derived_values(&mut self) {
+        // 配置值的更新逻辑
+        // 大部分字段已经在反序列化时处理
+    }
+
+    /// 转换为 GuiConfig
+    pub fn to_gui_config(&self) -> GuiConfig {
+        GuiConfig {
+            pth_path: self.pth_path.clone().unwrap_or_default(),
+            index_path: self.index_path.clone().unwrap_or_default(),
+            pitch: self.pitch.unwrap_or(0),
+            formant: self.formant.unwrap_or(0.0),
+            sr_type: self
+                .sr_type
+                .clone()
+                .unwrap_or_else(|| "sr_model".to_string()),
+            block_time: self.block_time.unwrap_or(0.25),
+            threshold: self.threshold.unwrap_or(-60.0),
+            crossfade_time: self.crossfade_time.unwrap_or(0.05),
+            extra_time: self.extra_time.unwrap_or(2.5),
+            i_noise_reduce: false,
+            o_noise_reduce: false,
+            use_pv: self.use_pv.unwrap_or(false),
+            rms_mix_rate: self.rms_mix_rate.unwrap_or(0.0),
+            index_rate: self.index_rate.unwrap_or(0.0),
+            n_cpu: if self.n_cpu > 0 {
+                self.n_cpu
+            } else {
+                num_cpus::get().min(4)
+            },
+            f0method: self.f0method.clone().unwrap_or_else(|| "fcpe".to_string()),
+            sg_hostapi: self.sg_hostapi.clone().unwrap_or_default(),
+            wasapi_exclusive: self.wasapi_exclusive.unwrap_or(false),
+            sg_input_device: self.sg_input_device.clone().unwrap_or_default(),
+            sg_output_device: self.sg_output_device.clone().unwrap_or_default(),
+        }
     }
 
     /// 保存配置到 JSON 文件

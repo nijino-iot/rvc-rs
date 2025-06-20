@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Harvest F0 Extraction**: Implemented pyworld.harvest equivalent using rsworld
+  - Added `world_f0.rs` module with complete Harvest algorithm support
+  - Added `WorldF0Extractor` for single-threaded F0 extraction
+  - Added `HarvestQueueManager` for multi-threaded processing (matches Python queue system)
+  - Added `extract_f0_harvest_simple` convenience function
+  - Implemented median filtering and pitch shifting post-processing
+  - Added comprehensive unit and integration tests
+  - Full compatibility with Python rtrvc.py and gui_v1.py harvest calls
+
 ### Changed
 - **Core Module Migration**: Replaced `rvc_model.rs` with `rtrvc.rs`
   - Migrated from `RvcRealtimeModel` to `RVC` struct based on Python `rtrvc.py`

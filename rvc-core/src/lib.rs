@@ -10,6 +10,7 @@ pub mod gui;
 pub mod pytorch_loader;
 pub mod rtrvc;
 pub mod sd;
+pub mod world_f0;
 
 pub mod utils;
 
@@ -17,10 +18,11 @@ pub mod utils;
 pub use config::{Config, ConfigManager, GuiConfig};
 pub use error::*;
 pub use f0::*;
-pub use gui::GuiManager;
+pub use gui::{AppState, AudioDeviceInfo, GuiManager, RuntimeStats};
 pub use pytorch_loader::*;
 pub use rtrvc::*;
 pub use sd::{printt, AudioStream, DeviceInfo, HostApiInfo};
+pub use world_f0::*;
 
 pub use utils::*;
 
