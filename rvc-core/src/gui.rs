@@ -2,15 +2,15 @@
 //!
 //! 对应 Python gui_v1.py 的 GUI 类，提供完整的事件处理和状态管理功能
 
-use crate::config::{Config, GuiConfig};
+use crate::config::GuiConfig;
 use crate::error::{RvcError, RvcResult};
 use crate::rtrvc::RVC;
 use crate::sd::{self, printt, AudioStream};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
-use tch::{Device, Kind, Tensor};
+use tch::{Kind, Tensor};
 
 /// 音频设备信息
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -79,6 +79,8 @@ pub struct GuiManager {
     model: Option<RVC>,
     /// 音频流管理器
     audio_stream: Option<AudioStream>,
+    /// 音频处理器
+    audio_processor: Option<Arc<Mutex<AudioProcessor>>>,
     /// 延迟时间
     delay_time: f64,
     /// 主机API列表
@@ -118,7 +120,7 @@ pub struct GuiManager {
     /// 输入音频重采样缓冲区
     input_wav_res: Option<Tensor>,
     /// RMS缓冲区
-    rms_buffer: Vec<f32>,
+    rms_buffer: Option<Tensor>,
     /// SOLA缓冲区
     sola_buffer: Option<Tensor>,
     /// 降噪缓冲区
@@ -141,6 +143,7 @@ impl GuiManager {
             config_manager,
             model: None,
             audio_stream: None,
+            audio_processor: None,
             delay_time: 0.0,
             hostapis: Vec::new(),
             input_devices: Vec::new(),
@@ -148,7 +151,7 @@ impl GuiManager {
             input_devices_indices: Vec::new(),
             output_devices_indices: Vec::new(),
             function: "vc".to_string(),
-            zc: 0,
+            zc: 48000 / 1000,
             block_frame: 0,
             block_frame_16k: 0,
             crossfade_frame: 0,
@@ -160,7 +163,7 @@ impl GuiManager {
             input_wav: None,
             input_wav_denoise: None,
             input_wav_res: None,
-            rms_buffer: Vec::new(),
+            rms_buffer: None,
             sola_buffer: None,
             nr_buffer: None,
             output_buffer: None,
@@ -268,16 +271,6 @@ impl GuiManager {
             .unwrap_or(48000.0) as u32
         };
 
-        let channels = self
-            .get_device_channels(
-                gui_config
-                    .sg_output_device
-                    .as_ref()
-                    .map(|s| s.as_str())
-                    .unwrap_or(""),
-            )
-            .unwrap_or(2) as u32;
-
         // 3. 计算各种帧大小参数，对应Python中的计算逻辑
         self.zc = sample_rate / 100; // 每10ms的采样数
 
@@ -323,7 +316,7 @@ impl GuiManager {
         ));
 
         // 初始化RMS缓冲区
-        self.rms_buffer = vec![0.0; (4 * self.zc) as usize];
+        self.rms_buffer = Some(Tensor::zeros(&[4 * self.zc as i64], (Kind::Float, device)));
 
         // 初始化SOLA缓冲区
         self.sola_buffer = Some(Tensor::zeros(
@@ -362,6 +355,8 @@ impl GuiManager {
     /// 启动音频流，对应Python GUI.start_stream
     pub fn start_stream(&mut self) -> RvcResult<()> {
         let gui_config = self.config_manager.gui_config();
+
+        // 确定采样率
         let sample_rate = if gui_config
             .sr_type
             .as_ref()
@@ -373,135 +368,161 @@ impl GuiManager {
                 48000
             }
         } else {
-            48000 // 默认采样率
+            48000
         };
 
-        // 创建音频回调函数
+        // 确定声道数
+        let channels = self
+            .get_device_channels(
+                gui_config
+                    .sg_output_device
+                    .as_ref()
+                    .map(|s| s.as_str())
+                    .unwrap_or(""),
+            )
+            .unwrap_or(2) as usize;
+
+        // 确定块大小
+        let block_size = self.block_frame as usize;
+
+        // 检查是否使用WASAPI独占模式
+        let exclusive_mode = gui_config
+            .sg_hostapi
+            .as_ref()
+            .map_or(false, |api| api.contains("WASAPI"))
+            && gui_config.sg_wasapi_exclusive.unwrap_or(false);
+
+        log::info!(
+            "Starting audio stream - Sample rate: {}, Channels: {}, Block size: {}, Exclusive: {}",
+            sample_rate,
+            channels,
+            block_size,
+            exclusive_mode
+        );
+
+        // 创建音频流配置
+        let stream_config = sd::StreamConfig {
+            sample_rate,
+            channels,
+            block_size,
+            exclusive_mode,
+        };
+
+        // 创建音频处理器
+        let audio_processor = Arc::new(Mutex::new(AudioProcessor::new(
+            self.config_manager.gui_config().clone(),
+            None, // TODO: 传递模型
+            self.function.clone(),
+            self.zc as i32,
+            self.block_frame as i32,
+            self.block_frame_16k as i32,
+            self.crossfade_frame as i32,
+            self.sola_buffer_frame as i32,
+            self.sola_search_frame as i32,
+            self.extra_frame as i32,
+            self.skip_head as i32,
+            self.return_length as i32,
+        )?));
+
+        let processor_clone = Arc::clone(&audio_processor);
+
+        // 创建音频流
+        let mut audio_stream = AudioStream::new(stream_config)?;
+
+        // 设置音频回调函数
         let callback = Box::new(move |input: &[f32], output: &mut [f32]| {
-            // 这里是音频处理回调的简化实现
-            // 实际实现需要调用audio_callback方法
-            for (i, sample) in output.iter_mut().enumerate() {
-                *sample = if i < input.len() { input[i] } else { 0.0 };
+            if let Ok(mut processor) = processor_clone.lock() {
+                if let Err(e) = processor.audio_callback(input, output) {
+                    log::error!("Audio callback error: {}", e);
+                }
             }
         });
 
-        // 创建音频流
-        self.audio_stream = Some(AudioStream::new(
-            sample_rate,
-            self.block_frame as usize,
-            2,
-            callback,
-        )?);
+        audio_stream.set_callback(callback);
 
-        if let Some(stream) = &mut self.audio_stream {
-            // 启动流
-            stream.start()?;
-        }
+        // 启动流
+        audio_stream.start()?;
+        log::info!("Audio stream started successfully");
+
+        self.audio_stream = Some(audio_stream);
+        self.audio_processor = Some(audio_processor);
 
         Ok(())
+    }
+
+    /// 计算RMS值，对应Python的librosa.feature.rms
+    fn compute_rms(&self, data: &[f32], frame_length: usize, hop_length: usize) -> Vec<f32> {
+        let mut rms_values = Vec::new();
+
+        if data.len() < frame_length {
+            return rms_values;
+        }
+
+        let num_frames = (data.len() - frame_length) / hop_length + 1;
+
+        for i in 0..num_frames {
+            let start = i * hop_length;
+            let end = (start + frame_length).min(data.len());
+
+            if end <= start {
+                break;
+            }
+
+            let frame = &data[start..end];
+            let rms = (frame.iter().map(|x| x * x).sum::<f32>() / frame.len() as f32).sqrt();
+
+            // 转换为分贝
+            let rms_db = if rms > 0.0 {
+                20.0 * rms.log10()
+            } else {
+                -60.0 // 静音阈值
+            };
+
+            rms_values.push(rms_db);
+        }
+
+        rms_values
+    }
+
+    /// 计算张量的RMS值
+    fn compute_tensor_rms(
+        &self,
+        tensor: &Tensor,
+        frame_length: usize,
+        hop_length: usize,
+    ) -> Tensor {
+        let data: Vec<f32> = Vec::try_from(tensor.to(tch::Device::Cpu)).unwrap_or_default();
+
+        if data.len() < frame_length {
+            return Tensor::zeros(&[1], (tch::Kind::Float, tch::Device::Cpu));
+        }
+
+        let num_frames = (data.len() - frame_length) / hop_length + 1;
+        let mut rms_values = Vec::with_capacity(num_frames);
+
+        for i in 0..num_frames {
+            let start = i * hop_length;
+            let end = (start + frame_length).min(data.len());
+
+            if end <= start {
+                break;
+            }
+
+            let frame = &data[start..end];
+            let rms = (frame.iter().map(|x| x * x).sum::<f32>() / frame.len() as f32).sqrt();
+            rms_values.push(rms);
+        }
+
+        Tensor::from_slice(&rms_values).to(tensor.device())
     }
 
     /// 停止音频流，对应Python GUI.stop_stream
     pub fn stop_stream(&mut self) -> RvcResult<()> {
-        if let Some(mut stream) = self.audio_stream.take() {
+        if let Some(stream) = &mut self.audio_stream {
             stream.stop()?;
+            log::info!("Audio stream stopped");
         }
-        Ok(())
-    }
-
-    /// 音频回调函数，对应Python GUI.audio_callback
-    fn audio_callback(&mut self, indata: &[f32], outdata: &mut [f32]) -> RvcResult<()> {
-        let start_time = Instant::now();
-
-        // 1. 转换为单声道，对应Python的librosa.to_mono
-        let mono_input = self.to_mono(indata);
-
-        // 2. 应用阈值门控（如果启用）
-        let gui_config = self.config_manager.gui_config();
-        let processed_input = if gui_config.threshold.unwrap_or(-60.0) > -60.0 {
-            mono_input // 暂时移除阈值门控，待实现
-        } else {
-            mono_input
-        };
-
-        // 3. 更新输入缓冲区
-        if let Some(input_wav) = &mut self.input_wav {
-            // 移动现有数据
-            let block_size = self.block_frame as usize;
-            let total_size = input_wav.size()[0] as usize;
-
-            if total_size > block_size {
-                let moved_data =
-                    input_wav.narrow(0, block_size as i64, (total_size - block_size) as i64);
-                let _ = input_wav
-                    .narrow(0, 0, (total_size - block_size) as i64)
-                    .copy_(&moved_data);
-            }
-
-            // 添加新数据
-            let new_data = Tensor::from_slice(&processed_input).to_device(input_wav.device());
-            let start_idx = total_size - processed_input.len();
-            let _ = input_wav
-                .narrow(0, start_idx as i64, processed_input.len() as i64)
-                .copy_(&new_data);
-        }
-
-        // 4. 执行推理
-        let infer_result = if self.function == "vc" {
-            if let (Some(rvc), Some(input_wav_res)) = (&mut self.model, &self.input_wav_res) {
-                use crate::f0::F0Method;
-                let f0_method = match gui_config
-                    .f0method
-                    .as_ref()
-                    .map(|s| s.as_str())
-                    .unwrap_or("harvest")
-                {
-                    "harvest" => F0Method::Harvest,
-                    "pm" => F0Method::Pm,
-                    "crepe" => F0Method::Crepe,
-                    "rmvpe" => F0Method::Rmvpe,
-                    "fcpe" => F0Method::Fcpe,
-                    _ => F0Method::Harvest,
-                };
-                rvc.infer(
-                    input_wav_res,
-                    self.block_frame_16k as usize,
-                    self.skip_head as usize,
-                    self.return_length as usize,
-                    f0_method,
-                )?
-            } else {
-                return Err(RvcError::other("RVC not initialized"));
-            }
-        } else {
-            // 直通模式
-            if let Some(input_wav) = &self.input_wav {
-                input_wav.narrow(0, self.extra_frame as i64, self.block_frame as i64)
-            } else {
-                return Err(RvcError::other("Input buffer not initialized"));
-            }
-        };
-
-        // 5. 转换为输出格式并写入输出缓冲区
-        let output_samples = infer_result.narrow(0, 0, self.block_frame as i64);
-        let output_cpu = output_samples.to(tch::Device::Cpu);
-        let output_data: Vec<f64> = Vec::try_from(output_cpu).unwrap_or_default();
-        let output_data: Vec<f32> = output_data.into_iter().map(|x| x as f32).collect();
-
-        // 扩展到多声道
-        let channels = 2; // 简化为立体声
-        for (i, &sample) in output_data.iter().enumerate() {
-            for ch in 0..channels {
-                if i * channels + ch < outdata.len() {
-                    outdata[i * channels + ch] = sample;
-                }
-            }
-        }
-
-        // 记录推理时间
-        let inference_time = start_time.elapsed().as_millis();
-        log::debug!("Inference time: {}ms", inference_time);
-
+        self.audio_stream = None;
         Ok(())
     }
 
@@ -682,13 +703,13 @@ impl GuiManager {
     }
 
     /// 获取设备采样率（简化实现）
-    pub fn get_device_sample_rate_simple(&self, device_name: &str) -> Option<f64> {
+    pub fn get_device_sample_rate_simple(&self, _device_name: &str) -> Option<f64> {
         // 简化实现，返回默认采样率
         Some(48000.0)
     }
 
     /// 获取设备通道数（简化实现）
-    pub fn get_device_channels_simple(&self, device_name: &str, is_input: bool) -> Option<u32> {
+    pub fn get_device_channels_simple(&self, _device_name: &str, _is_input: bool) -> Option<u32> {
         // 简化实现，返回立体声
         Some(2)
     }
@@ -751,7 +772,513 @@ impl GuiManager {
 
     /// 异步初始化
     pub async fn initialize(&mut self) -> RvcResult<()> {
-        self.update_devices(None)?;
         Ok(())
+    }
+}
+
+/// 音频处理器，用于处理实时音频回调
+pub struct AudioProcessor {
+    gui_config: GuiConfig,
+    model: Option<RVC>,
+    function: String,
+    zc: i32,
+    block_frame: i32,
+    block_frame_16k: i32,
+    crossfade_frame: i32,
+    sola_buffer_frame: i32,
+    sola_search_frame: i32,
+    extra_frame: i32,
+    skip_head: i32,
+    return_length: i32,
+    input_wav: Option<Tensor>,
+    input_wav_denoise: Option<Tensor>,
+    input_wav_res: Option<Tensor>,
+    rms_buffer: Option<Tensor>,
+    sola_buffer: Option<Tensor>,
+    nr_buffer: Option<Tensor>,
+    output_buffer: Option<Tensor>,
+    fade_in_window: Option<Tensor>,
+    fade_out_window: Option<Tensor>,
+}
+
+impl AudioProcessor {
+    pub fn new(
+        gui_config: GuiConfig,
+        model: Option<RVC>,
+        function: String,
+        zc: i32,
+        block_frame: i32,
+        block_frame_16k: i32,
+        crossfade_frame: i32,
+        sola_buffer_frame: i32,
+        sola_search_frame: i32,
+        extra_frame: i32,
+        skip_head: i32,
+        return_length: i32,
+    ) -> RvcResult<Self> {
+        let device = tch::Device::Cpu; // TODO: 从配置中获取设备
+
+        // 初始化音频缓冲区
+        let total_wav_len = (48000.0 * 3.0) as i64;
+        let input_wav = Some(Tensor::zeros(&[total_wav_len], (tch::Kind::Float, device)));
+
+        let total_wav_res_len = (16000.0 * 3.0) as i64;
+        let input_wav_res = Some(Tensor::zeros(
+            &[total_wav_res_len],
+            (tch::Kind::Float, device),
+        ));
+
+        // 初始化其他缓冲区
+        let rms_buffer = Some(Tensor::zeros(&[4 * zc as i64], (tch::Kind::Float, device)));
+        let sola_buffer = Some(Tensor::zeros(
+            &[sola_buffer_frame as i64],
+            (tch::Kind::Float, device),
+        ));
+        let nr_buffer = Some(Tensor::zeros(
+            &[sola_buffer_frame as i64],
+            (tch::Kind::Float, device),
+        ));
+        let output_buffer = Some(Tensor::zeros(&[total_wav_len], (tch::Kind::Float, device)));
+
+        // 创建淡入淡出窗口
+        let fade_in_window = Some(Self::create_fade_window(
+            sola_buffer_frame as usize,
+            true,
+            device,
+        ));
+        let fade_out_window = Some(Self::create_fade_window(
+            sola_buffer_frame as usize,
+            false,
+            device,
+        ));
+
+        Ok(Self {
+            gui_config,
+            model,
+            function,
+            zc,
+            block_frame,
+            block_frame_16k,
+            crossfade_frame,
+            sola_buffer_frame,
+            sola_search_frame,
+            extra_frame,
+            skip_head,
+            return_length,
+            input_wav,
+            input_wav_denoise: None,
+            input_wav_res,
+            rms_buffer,
+            sola_buffer,
+            nr_buffer,
+            output_buffer,
+            fade_in_window,
+            fade_out_window,
+        })
+    }
+
+    fn create_fade_window(size: usize, fade_in: bool, device: tch::Device) -> Tensor {
+        let mut window = vec![0.0f32; size];
+        for i in 0..size {
+            let t = i as f32 / size as f32;
+            window[i] = if fade_in {
+                t // 淡入：从0到1
+            } else {
+                1.0 - t // 淡出：从1到0
+            };
+        }
+        Tensor::from_slice(&window).to(device)
+    }
+
+    /// 音频回调函数，对应Python GUI.audio_callback
+    pub fn audio_callback(&mut self, indata: &[f32], outdata: &mut [f32]) -> RvcResult<()> {
+        let start_time = Instant::now();
+
+        // 1. 转换为单声道，对应Python的librosa.to_mono
+        let mut mono_input = self.to_mono(indata);
+
+        let gui_config = self.gui_config.clone();
+        let device = tch::Device::Cpu; // TODO: 从配置中获取设备
+        let zc = self.zc;
+
+        // 2. 应用阈值门控（如果启用）
+        if gui_config.threshold.unwrap_or(-60.0) > -60.0 {
+            // 更新RMS缓冲区
+            if let Some(rms_buffer) = &mut self.rms_buffer {
+                // 将新数据添加到RMS缓冲区
+                let combined_data = [
+                    Vec::<f32>::try_from(rms_buffer.to(tch::Device::Cpu)).unwrap_or_default(),
+                    mono_input.clone(),
+                ]
+                .concat();
+
+                // 计算RMS
+                let frame_length = 4 * zc as usize;
+                let hop_length = zc as usize;
+                let rms_values = Self::compute_rms_static(&combined_data, frame_length, hop_length);
+
+                // 更新RMS缓冲区
+                let buffer_size = 4 * zc as usize;
+                if combined_data.len() >= buffer_size {
+                    let new_buffer = &combined_data[combined_data.len() - buffer_size..];
+                    *rms_buffer = Tensor::from_slice(new_buffer).to(device);
+                }
+
+                // 应用阈值门控
+                let threshold_db = gui_config.threshold.unwrap_or(-60.0);
+                let start_idx = 2 * zc as usize - zc as usize / 2;
+                if combined_data.len() > start_idx {
+                    mono_input = combined_data[start_idx..].to_vec();
+
+                    // 对每个窗口应用阈值
+                    for (i, &rms_db) in rms_values.iter().enumerate() {
+                        if rms_db < threshold_db {
+                            let start = i * hop_length;
+                            let end = (start + hop_length).min(mono_input.len());
+                            for j in start..end {
+                                mono_input[j] = 0.0;
+                            }
+                        }
+                    }
+
+                    // 移除前半部分
+                    if mono_input.len() > zc as usize / 2 {
+                        mono_input = mono_input[zc as usize / 2..].to_vec();
+                    }
+                }
+            }
+        }
+
+        // 3. 更新输入缓冲区
+        if let Some(input_wav) = &mut self.input_wav {
+            // 滑动窗口：移动现有数据
+            let block_size = self.block_frame as usize;
+            let total_size = input_wav.size()[0] as usize;
+
+            if total_size > block_size {
+                let shifted_data =
+                    input_wav.narrow(0, block_size as i64, (total_size - block_size) as i64);
+                let _ = input_wav
+                    .narrow(0, 0, (total_size - block_size) as i64)
+                    .copy_(&shifted_data);
+            }
+
+            // 添加新数据到末尾
+            let new_data = Tensor::from_slice(&mono_input).to(device);
+            let start_idx = (total_size - mono_input.len()).max(0);
+            let _ = input_wav
+                .narrow(0, start_idx as i64, mono_input.len() as i64)
+                .copy_(&new_data);
+        }
+
+        // 4. 更新16kHz重采样缓冲区
+        if let Some(input_wav_res) = &mut self.input_wav_res {
+            let block_size_16k = self.block_frame_16k as usize;
+            let total_size = input_wav_res.size()[0] as usize;
+
+            if total_size > block_size_16k {
+                let shifted_data = input_wav_res.narrow(
+                    0,
+                    block_size_16k as i64,
+                    (total_size - block_size_16k) as i64,
+                );
+                let _ = input_wav_res
+                    .narrow(0, 0, (total_size - block_size_16k) as i64)
+                    .copy_(&shifted_data);
+            }
+
+            // 重采样新数据到16kHz
+            if let Some(input_wav) = &self.input_wav {
+                let resample_input_size = mono_input.len() + 2 * self.zc as usize;
+                let resample_input = input_wav.narrow(
+                    0,
+                    (input_wav.size()[0] - resample_input_size as i64).max(0),
+                    resample_input_size as i64,
+                );
+
+                // TODO: 实现重采样器
+                // let resampled = self.resampler.resample(&resample_input)?;
+                // 暂时使用简单的下采样
+                let resampled_data: Vec<f32> =
+                    Vec::try_from(resample_input.to(tch::Device::Cpu)).unwrap_or_default();
+                let downsampled: Vec<f32> = resampled_data.iter().step_by(3).cloned().collect(); // 48kHz -> 16kHz 大约是3:1
+
+                let new_data = Tensor::from_slice(&downsampled).to(device);
+                let start_idx = (total_size - downsampled.len()).max(0);
+                if start_idx < total_size {
+                    let _ = input_wav_res
+                        .narrow(0, start_idx as i64, downsampled.len() as i64)
+                        .copy_(&new_data);
+                }
+            }
+        }
+
+        // 5. 噪声抑制处理（如果启用）
+        let processed_wav = if gui_config.i_noise_reduce.unwrap_or(false) && self.function == "vc" {
+            // TODO: 实现噪声抑制
+            if let Some(input_wav) = &self.input_wav {
+                input_wav.narrow(0, self.extra_frame as i64, self.block_frame as i64)
+            } else {
+                return Err(RvcError::other("Input buffer not initialized"));
+            }
+        } else {
+            if let Some(input_wav) = &self.input_wav {
+                input_wav.narrow(0, self.extra_frame as i64, self.block_frame as i64)
+            } else {
+                return Err(RvcError::other("Input buffer not initialized"));
+            }
+        };
+
+        // 6. 执行推理
+        let mut infer_wav = if self.function == "vc" {
+            if let (Some(rvc), Some(input_wav_res)) = (&mut self.model, &self.input_wav_res) {
+                use crate::f0::F0Method;
+                let f0_method = match gui_config
+                    .f0method
+                    .as_ref()
+                    .map(|s| s.as_str())
+                    .unwrap_or("harvest")
+                {
+                    "harvest" => F0Method::Harvest,
+                    "pm" => F0Method::Pm,
+                    "crepe" => F0Method::Crepe,
+                    "rmvpe" => F0Method::Rmvpe,
+                    "fcpe" => F0Method::Fcpe,
+                    _ => F0Method::Harvest,
+                };
+
+                rvc.infer(
+                    input_wav_res,
+                    self.block_frame_16k as usize,
+                    self.skip_head as usize,
+                    self.return_length as usize,
+                    f0_method,
+                )?
+            } else {
+                return Err(RvcError::other("RVC not initialized"));
+            }
+        } else {
+            processed_wav
+        };
+
+        // 7. 输出噪声抑制（如果启用）
+        if gui_config.o_noise_reduce.unwrap_or(false) && self.function == "vc" {
+            if let Some(output_buffer) = &mut self.output_buffer {
+                // 更新输出缓冲区
+                let block_size = self.block_frame as usize;
+                let total_size = output_buffer.size()[0] as usize;
+
+                if total_size > block_size {
+                    let shifted_data = output_buffer.narrow(
+                        0,
+                        block_size as i64,
+                        (total_size - block_size) as i64,
+                    );
+                    let _ = output_buffer
+                        .narrow(0, 0, (total_size - block_size) as i64)
+                        .copy_(&shifted_data);
+                }
+
+                let infer_block = infer_wav.narrow(
+                    0,
+                    (infer_wav.size()[0] - block_size as i64).max(0),
+                    block_size as i64,
+                );
+                let _ = output_buffer
+                    .narrow(0, (total_size - block_size) as i64, block_size as i64)
+                    .copy_(&infer_block);
+
+                // TODO: 应用噪声抑制
+                // infer_wav = self.tg.forward(&infer_wav.unsqueeze(0), &output_buffer.unsqueeze(0)).squeeze(0);
+            }
+        }
+
+        // 8. RMS混合（如果启用）
+        // TODO: 暂时注释掉，避免编译错误
+        // if gui_config.rms_mix_rate.unwrap_or(1.0) < 1.0 && self.function == "vc" {
+        //     // RMS混合逻辑待实现
+        // }
+
+        // 9. SOLA算法处理
+        if let Some(sola_buffer) = self.sola_buffer.as_ref() {
+            let sola_buffer_frame = self.sola_buffer_frame as usize;
+            let sola_search_frame = self.sola_search_frame as usize;
+
+            // 计算相关性
+            let _conv_input =
+                infer_wav.narrow(0, 0, (sola_buffer_frame + sola_search_frame) as i64);
+
+            // TODO: 实现卷积相关性计算
+            // 暂时使用简单的SOLA处理
+            let sola_offset = 0; // 暂时设为0
+
+            // 基于SOLA偏移调整推理结果
+            let infer_wav_shifted =
+                infer_wav.narrow(0, sola_offset, infer_wav.size()[0] - sola_offset as i64);
+
+            // 应用淡入淡出窗口 (对应Python的SOLA算法)
+            if let (Some(fade_in), Some(fade_out)) = (&self.fade_in_window, &self.fade_out_window) {
+                // 应用淡入淡出混合
+                let output_section = infer_wav_shifted.narrow(0, 0, sola_buffer_frame as i64);
+                let blended_section = &output_section * fade_in + sola_buffer * fade_out;
+
+                // 将混合结果写回到infer_wav_shifted的前面部分
+                let _ = infer_wav_shifted
+                    .narrow(0, 0, sola_buffer_frame as i64)
+                    .copy_(&blended_section);
+
+                // 更新SOLA缓冲区 (对应Python的self.sola_buffer[:] = infer_wav[...])
+                let block_start = self.block_frame as i64;
+                let block_end = block_start + sola_buffer_frame as i64;
+                if infer_wav_shifted.size()[0] > block_end {
+                    let new_sola_buffer =
+                        infer_wav_shifted.narrow(0, block_start, sola_buffer_frame as i64);
+                    if let Some(ref mut sola_buf) = self.sola_buffer {
+                        let _ = sola_buf.copy_(&new_sola_buffer);
+                    }
+                }
+
+                infer_wav = infer_wav_shifted;
+            }
+        }
+
+        // 10. 转换为输出格式并写入输出缓冲区
+        let output_samples = infer_wav.narrow(0, 0, self.block_frame as i64);
+        let output_cpu = output_samples.to(tch::Device::Cpu);
+        let output_data: Vec<f64> = Vec::try_from(output_cpu).unwrap_or_default();
+        let output_data: Vec<f32> = output_data.into_iter().map(|x| x as f32).collect();
+
+        // 扩展到多声道
+        let channels = 2; // 默认立体声
+        for (i, &sample) in output_data.iter().enumerate() {
+            for ch in 0..channels {
+                if i * channels + ch < outdata.len() {
+                    outdata[i * channels + ch] = sample;
+                }
+            }
+        }
+
+        // 记录推理时间
+        let inference_time = start_time.elapsed().as_millis();
+        log::debug!("Inference time: {}ms", inference_time);
+
+        Ok(())
+    }
+
+    /// 计算RMS值，对应Python的librosa.feature.rms
+    fn compute_rms(&self, data: &[f32], frame_length: usize, hop_length: usize) -> Vec<f32> {
+        let mut rms_values = Vec::new();
+
+        if data.len() < frame_length {
+            return rms_values;
+        }
+
+        let num_frames = (data.len() - frame_length) / hop_length + 1;
+
+        for i in 0..num_frames {
+            let start = i * hop_length;
+            let end = (start + frame_length).min(data.len());
+
+            if end <= start {
+                break;
+            }
+
+            let frame = &data[start..end];
+            let rms = (frame.iter().map(|x| x * x).sum::<f32>() / frame.len() as f32).sqrt();
+
+            // 转换为分贝
+            let rms_db = if rms > 0.0 {
+                20.0 * rms.log10()
+            } else {
+                -60.0 // 静音阈值
+            };
+
+            rms_values.push(rms_db);
+        }
+
+        rms_values
+    }
+
+    /// 计算张量的RMS值
+    fn compute_tensor_rms(
+        &self,
+        tensor: &Tensor,
+        frame_length: usize,
+        hop_length: usize,
+    ) -> Tensor {
+        let data: Vec<f32> = Vec::try_from(tensor.to(tch::Device::Cpu)).unwrap_or_default();
+
+        if data.len() < frame_length {
+            return Tensor::zeros(&[1], (tch::Kind::Float, tch::Device::Cpu));
+        }
+
+        let num_frames = (data.len() - frame_length) / hop_length + 1;
+        let mut rms_values = Vec::with_capacity(num_frames);
+
+        for i in 0..num_frames {
+            let start = i * hop_length;
+            let end = (start + frame_length).min(data.len());
+
+            if end <= start {
+                break;
+            }
+
+            let frame = &data[start..end];
+            let rms = (frame.iter().map(|x| x * x).sum::<f32>() / frame.len() as f32).sqrt();
+            rms_values.push(rms);
+        }
+
+        Tensor::from_slice(&rms_values).to(tensor.device())
+    }
+
+    /// 转换为单声道，对应Python的librosa.to_mono
+    fn to_mono(&self, data: &[f32]) -> Vec<f32> {
+        let channels = 2; // 默认立体声
+
+        if channels == 1 {
+            return data.to_vec();
+        }
+
+        let mut mono = Vec::new();
+        for chunk in data.chunks_exact(channels) {
+            let sum: f32 = chunk.iter().sum();
+            mono.push(sum / channels as f32);
+        }
+
+        mono
+    }
+
+    /// 静态版本的计算RMS值，用于避免借用冲突
+    fn compute_rms_static(data: &[f32], frame_length: usize, hop_length: usize) -> Vec<f32> {
+        let mut rms_values = Vec::new();
+
+        if data.len() < frame_length {
+            return rms_values;
+        }
+
+        let num_frames = (data.len() - frame_length) / hop_length + 1;
+
+        for i in 0..num_frames {
+            let start = i * hop_length;
+            let end = (start + frame_length).min(data.len());
+
+            if end <= start {
+                break;
+            }
+
+            let frame = &data[start..end];
+            let rms = (frame.iter().map(|x| x * x).sum::<f32>() / frame.len() as f32).sqrt();
+
+            // 转换为分贝
+            let rms_db = if rms > 0.0 {
+                20.0 * rms.log10()
+            } else {
+                -60.0 // 静音阈值
+            };
+
+            rms_values.push(rms_db);
+        }
+
+        rms_values
     }
 }

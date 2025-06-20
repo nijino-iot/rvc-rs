@@ -4,13 +4,31 @@
 
 use crate::error::{RvcError, RvcResult};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{Device, Host, Sample, SampleFormat, Stream, StreamConfig};
+use cpal::{Device, Host, Stream};
 use std::sync::{Arc, Mutex};
-use std::thread;
-use std::time::Duration;
 
 /// 音频回调函数类型，对应Python sounddevice的callback
 pub type AudioCallback = Box<dyn FnMut(&[f32], &mut [f32]) + Send + 'static>;
+
+/// 音频流配置，对应Python sounddevice的Stream参数
+#[derive(Debug, Clone)]
+pub struct StreamConfig {
+    pub sample_rate: u32,
+    pub channels: usize,
+    pub block_size: usize,
+    pub exclusive_mode: bool,
+}
+
+/// 转换为cpal的StreamConfig
+impl StreamConfig {
+    pub fn to_cpal_config(&self) -> cpal::StreamConfig {
+        cpal::StreamConfig {
+            channels: self.channels as u16,
+            sample_rate: cpal::SampleRate(self.sample_rate),
+            buffer_size: cpal::BufferSize::Fixed(self.block_size as u32),
+        }
+    }
+}
 
 /// 音频设备信息，对应Python sounddevice的device info
 #[derive(Debug, Clone)]
@@ -43,7 +61,7 @@ pub struct AudioStream {
     input_stream: Option<Stream>,
     output_stream: Option<Stream>,
     state: Arc<Mutex<StreamState>>,
-    config: StreamConfig,
+    config: crate::sd::StreamConfig,
     callback: Option<AudioCallback>,
 }
 
@@ -127,7 +145,7 @@ pub fn query_devices() -> Vec<DeviceInfo> {
 
         // 添加输入设备
         if let Ok(input_devices) = host.input_devices() {
-            for (index, device) in input_devices.enumerate() {
+            for (_index, device) in input_devices.enumerate() {
                 if let Ok(name) = device.name() {
                     let (max_input_channels, default_samplerate) = get_device_info(&device, true);
 
@@ -145,7 +163,7 @@ pub fn query_devices() -> Vec<DeviceInfo> {
 
         // 添加输出设备
         if let Ok(output_devices) = host.output_devices() {
-            for (index, device) in output_devices.enumerate() {
+            for (_index, device) in output_devices.enumerate() {
                 if let Ok(name) = device.name() {
                     let (max_output_channels, default_samplerate) = get_device_info(&device, false);
 
@@ -323,25 +341,19 @@ pub fn get_device_max_channels(device_name: &str, is_input: bool) -> RvcResult<u
 
 impl AudioStream {
     /// 创建新的音频流，对应Python的sd.Stream()
-    pub fn new(
-        sample_rate: u32,
-        block_size: usize,
-        channels: u16,
-        callback: AudioCallback,
-    ) -> RvcResult<Self> {
-        let config = StreamConfig {
-            channels,
-            sample_rate: cpal::SampleRate(sample_rate),
-            buffer_size: cpal::BufferSize::Fixed(block_size as u32),
-        };
-
+    pub fn new(config: StreamConfig) -> RvcResult<Self> {
         Ok(Self {
             input_stream: None,
             output_stream: None,
             state: Arc::new(Mutex::new(StreamState::Stopped)),
             config,
-            callback: Some(callback),
+            callback: None,
         })
+    }
+
+    /// 设置音频回调函数
+    pub fn set_callback(&mut self, callback: AudioCallback) {
+        self.callback = Some(callback);
     }
 
     /// 启动音频流，对应Python的stream.start()
@@ -371,9 +383,11 @@ impl AudioStream {
                 .ok_or_else(|| RvcError::audio("No default output device found"))?
         };
 
+        // 创建cpal的StreamConfig
+        let cpal_config = self.config.to_cpal_config();
+
         // 创建音频流的数据缓冲区
         let state = Arc::clone(&self.state);
-        let config = self.config.clone();
 
         // 创建共享的音频缓冲区
         let audio_buffer = Arc::new(Mutex::new(Vec::<f32>::new()));
@@ -383,7 +397,7 @@ impl AudioStream {
         // 创建输入流
         let input_stream = input_device
             .build_input_stream(
-                &config,
+                &cpal_config,
                 move |data: &[f32], _: &cpal::InputCallbackInfo| {
                     let mut buffer = audio_buffer_input.lock().unwrap();
                     buffer.clear();
@@ -399,11 +413,11 @@ impl AudioStream {
 
         // 创建输出流
         let state_output = Arc::clone(&self.state);
-        let mut callback = self.callback.take().unwrap();
+        let callback = Arc::new(Mutex::new(self.callback.take()));
 
         let output_stream = output_device
             .build_output_stream(
-                &config,
+                &cpal_config,
                 move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
                     let input_buffer = audio_buffer_output.lock().unwrap();
                     let input_data = if input_buffer.is_empty() {
@@ -413,7 +427,11 @@ impl AudioStream {
                     };
 
                     // 调用用户回调函数
-                    callback(&input_data, data);
+                    if let Ok(mut callback_guard) = callback.lock() {
+                        if let Some(ref mut cb) = *callback_guard {
+                            cb(&input_data, data);
+                        }
+                    }
                 },
                 move |err| {
                     eprintln!("Audio output error: {}", err);
