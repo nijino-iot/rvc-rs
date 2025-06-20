@@ -177,27 +177,41 @@ impl GuiManager {
     /// 设置配置值，对应Python GUI.set_values
     pub fn set_values(&mut self, values: GuiConfig) -> RvcResult<bool> {
         // 验证路径
-        if values.pth_path.is_empty() {
+        let pth_path = values
+            .pth_path
+            .as_ref()
+            .ok_or_else(|| RvcError::other("请选择pth文件"))?;
+        if pth_path.is_empty() {
             return Err(RvcError::other("请选择pth文件"));
         }
-        if !std::path::Path::new(&values.pth_path).exists() {
+        if !std::path::Path::new(pth_path).exists() {
             return Err(RvcError::other("pth文件不存在"));
         }
 
         // 检查路径中是否包含非ASCII字符
-        if !values.pth_path.is_ascii() {
+        if !pth_path.is_ascii() {
             return Err(RvcError::other("pth文件路径不可包含中文"));
         }
-        if !values.index_path.is_ascii() {
-            return Err(RvcError::other("index文件路径不可包含中文"));
+        if let Some(index_path) = &values.index_path {
+            if !index_path.is_ascii() {
+                return Err(RvcError::other("index文件路径不可包含中文"));
+            }
         }
 
         // 克隆需要的字段以避免移动
-        let input_device = values.sg_input_device.clone();
-        let output_device = values.sg_output_device.clone();
+        let input_device = values
+            .sg_input_device
+            .as_ref()
+            .map(|s| s.as_str())
+            .unwrap_or("");
+        let output_device = values
+            .sg_output_device
+            .as_ref()
+            .map(|s| s.as_str())
+            .unwrap_or("");
 
         // 设置设备
-        self.set_devices(&input_device, &output_device)?;
+        self.set_devices(input_device, output_device)?;
 
         // 更新配置
         self.config_manager.update_gui_config(|config| {
@@ -225,46 +239,60 @@ impl GuiManager {
         };
 
         self.model = Some(RVC::new(
-            gui_config.pitch,
-            gui_config.formant,
-            &gui_config.pth_path,
-            if gui_config.index_path.is_empty() {
-                None
-            } else {
-                Some(&gui_config.index_path)
-            },
-            gui_config.index_rate,
-            gui_config.n_cpu as i32,
+            gui_config.pitch.unwrap_or(0),
+            gui_config.formant.unwrap_or(0.0),
+            gui_config.pth_path.as_ref().unwrap(),
+            gui_config.index_path.as_ref().filter(|p| !p.is_empty()),
+            gui_config.index_rate.unwrap_or(0.75),
+            gui_config.n_cpu.unwrap_or(4) as i32,
             config.clone(),
             None,
         )?);
 
         // 2. 确定采样率和通道数
         let rvc_ref = self.model.as_ref().unwrap();
-        let sample_rate = if gui_config.sr_type == "sr_model" {
+        let sample_rate = if gui_config
+            .sr_type
+            .as_ref()
+            .map_or(false, |s| s == "sr_model")
+        {
             rvc_ref.tgt_sr as u32
         } else {
-            self.get_device_sample_rate(&gui_config.sg_output_device)
-                .unwrap_or(48000.0) as u32
+            self.get_device_sample_rate(
+                gui_config
+                    .sg_output_device
+                    .as_ref()
+                    .map(|s| s.as_str())
+                    .unwrap_or(""),
+            )
+            .unwrap_or(48000.0) as u32
         };
 
         let channels = self
-            .get_device_channels(&gui_config.sg_output_device)
+            .get_device_channels(
+                gui_config
+                    .sg_output_device
+                    .as_ref()
+                    .map(|s| s.as_str())
+                    .unwrap_or(""),
+            )
             .unwrap_or(2) as u32;
 
         // 3. 计算各种帧大小参数，对应Python中的计算逻辑
         self.zc = sample_rate / 100; // 每10ms的采样数
 
         // 块帧数：对zc进行舍入处理
-        self.block_frame = ((gui_config.block_time * sample_rate as f32 / self.zc as f32).round()
-            as u32)
+        self.block_frame = ((gui_config.block_time.unwrap_or(0.3) * sample_rate as f32
+            / self.zc as f32)
+            .round() as u32)
             * self.zc;
 
         // 16k采样率下的块帧数
         self.block_frame_16k = 160 * self.block_frame / self.zc;
 
         // 交叉淡化帧数
-        self.crossfade_frame = ((gui_config.crossfade_time * sample_rate as f32 / self.zc as f32)
+        self.crossfade_frame = ((gui_config.crossfade_time.unwrap_or(0.08) * sample_rate as f32
+            / self.zc as f32)
             .round() as u32)
             * self.zc;
 
@@ -273,8 +301,9 @@ impl GuiManager {
         self.sola_search_frame = self.zc;
 
         // 额外帧数
-        self.extra_frame = ((gui_config.extra_time * sample_rate as f32 / self.zc as f32).round()
-            as u32)
+        self.extra_frame = ((gui_config.extra_time.unwrap_or(2.0) * sample_rate as f32
+            / self.zc as f32)
+            .round() as u32)
             * self.zc;
 
         // 4. 初始化张量缓冲区，对应Python中的张量初始化
@@ -333,7 +362,11 @@ impl GuiManager {
     /// 启动音频流，对应Python GUI.start_stream
     pub fn start_stream(&mut self) -> RvcResult<()> {
         let gui_config = self.config_manager.gui_config();
-        let sample_rate = if gui_config.sr_type == "sr_model" {
+        let sample_rate = if gui_config
+            .sr_type
+            .as_ref()
+            .map_or(false, |s| s == "sr_model")
+        {
             if let Some(rvc) = &self.model {
                 rvc.tgt_sr as u32
             } else {
@@ -385,7 +418,7 @@ impl GuiManager {
 
         // 2. 应用阈值门控（如果启用）
         let gui_config = self.config_manager.gui_config();
-        let processed_input = if gui_config.threshold > -60.0 {
+        let processed_input = if gui_config.threshold.unwrap_or(-60.0) > -60.0 {
             mono_input // 暂时移除阈值门控，待实现
         } else {
             mono_input
@@ -417,7 +450,12 @@ impl GuiManager {
         let infer_result = if self.function == "vc" {
             if let (Some(rvc), Some(input_wav_res)) = (&mut self.model, &self.input_wav_res) {
                 use crate::f0::F0Method;
-                let f0_method = match gui_config.f0method.as_str() {
+                let f0_method = match gui_config
+                    .f0method
+                    .as_ref()
+                    .map(|s| s.as_str())
+                    .unwrap_or("harvest")
+                {
                     "harvest" => F0Method::Harvest,
                     "pm" => F0Method::Pm,
                     "crepe" => F0Method::Crepe,
@@ -682,70 +720,19 @@ impl GuiManager {
         name: &str,
         value: serde_json::Value,
     ) -> RvcResult<()> {
-        self.config_manager.update_gui_config(|config| match name {
-            "pitch" => {
-                if let Some(v) = value.as_i64() {
-                    config.pitch = v as i32;
-                }
+        self.config_manager.update_gui_config(|config| {
+            // 使用统一的字段更新方法
+            let errors = config.update_field_from_json(name, value.clone());
+            if !errors.is_empty() {
+                log::warn!(
+                    "实时参数更新验证警告: {} = {:?}, 错误: {:?}",
+                    name,
+                    value,
+                    errors
+                );
+                // 对于实时参数更新，我们记录警告但不阻止操作
             }
-            "formant" => {
-                if let Some(v) = value.as_f64() {
-                    config.formant = v as f32;
-                }
-            }
-            "index_rate" => {
-                if let Some(v) = value.as_f64() {
-                    config.index_rate = v as f32;
-                }
-            }
-            "rms_mix_rate" => {
-                if let Some(v) = value.as_f64() {
-                    config.rms_mix_rate = v as f32;
-                }
-            }
-            "threshold" => {
-                if let Some(v) = value.as_f64() {
-                    config.threshold = v as f32;
-                }
-            }
-            "f0method" => {
-                if let Some(v) = value.as_str() {
-                    config.f0method = v.to_string();
-                }
-            }
-            "sr_type" => {
-                if let Some(v) = value.as_str() {
-                    config.sr_type = v.to_string();
-                }
-            }
-            "block_time" => {
-                if let Some(v) = value.as_f64() {
-                    config.block_time = v as f32;
-                }
-            }
-            "crossfade_time" => {
-                if let Some(v) = value.as_f64() {
-                    config.crossfade_time = v as f32;
-                }
-            }
-            "extra_time" => {
-                if let Some(v) = value.as_f64() {
-                    config.extra_time = v as f32;
-                }
-            }
-            "n_cpu" => {
-                if let Some(v) = value.as_i64() {
-                    config.n_cpu = v as usize;
-                }
-            }
-            "use_pv" => {
-                if let Some(v) = value.as_bool() {
-                    config.use_pv = v;
-                }
-            }
-            _ => {}
-        })?;
-        Ok(())
+        })
     }
 
     /// 获取运行时统计信息

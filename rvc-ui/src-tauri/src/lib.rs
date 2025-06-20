@@ -7,7 +7,7 @@ use tokio::sync::Mutex;
 
 // 引入 rvc_core 库
 use rvc_core::{
-    config::{Config, ConfigManager, GuiConfig},
+    config::{Config, ConfigManager},
     gui::{AppState, AudioDeviceInfo, RuntimeStats},
     sd,
 };
@@ -59,12 +59,22 @@ async fn load_config(state: State<'_, AppStateManager>) -> Result<Config, String
 }
 
 #[tauri::command]
-async fn save_config(data: Config, state: State<'_, AppStateManager>) -> Result<(), String> {
+async fn save_config(
+    data: serde_json::Value,
+    state: State<'_, AppStateManager>,
+) -> Result<(), String> {
     info!("保存配置文件 {:?}", data);
     let mut config_manager = state.config.lock().await;
+
     config_manager
-        .update_config(|c| {
-            *c = data;
+        .update_gui_config(|config| {
+            // 使用统一的更新方法，处理类型转换和验证
+            let errors = config.update_from_json(&data);
+            if !errors.is_empty() {
+                info!("配置验证警告: {:?}", errors);
+                // 对于配置保存，我们记录警告但不阻止保存
+                // 因为可能只是部分字段有问题
+            }
         })
         .map_err(|e| e.to_string())
 }
@@ -214,68 +224,16 @@ async fn update_parameter(
     // 配置文件更新
     let mut config_manager = state.config.lock().await;
     config_manager
-        .update_gui_config(|config| match name.as_str() {
-            "pitch" => {
-                if let Some(v) = value.as_i64() {
-                    config.pitch = v as i32;
-                }
+        .update_gui_config(|config| {
+            // 使用统一的字段更新方法
+            let errors = config.update_field_from_json(&name, value.clone());
+            if !errors.is_empty() {
+                info!(
+                    "参数更新验证警告: {} = {:?}, 错误: {:?}",
+                    name, value, errors
+                );
+                // 对于实时参数更新，我们记录警告但不阻止操作
             }
-            "formant" => {
-                if let Some(v) = value.as_f64() {
-                    config.formant = v as f32;
-                }
-            }
-            "index_rate" => {
-                if let Some(v) = value.as_f64() {
-                    config.index_rate = v as f32;
-                }
-            }
-            "rms_mix_rate" => {
-                if let Some(v) = value.as_f64() {
-                    config.rms_mix_rate = v as f32;
-                }
-            }
-            "threshold" => {
-                if let Some(v) = value.as_f64() {
-                    config.threshold = v as f32;
-                }
-            }
-            "f0method" => {
-                if let Some(v) = value.as_str() {
-                    config.f0method = v.to_string();
-                }
-            }
-            "sr_type" => {
-                if let Some(v) = value.as_str() {
-                    config.sr_type = v.to_string();
-                }
-            }
-            "block_time" => {
-                if let Some(v) = value.as_f64() {
-                    config.block_time = v as f32;
-                }
-            }
-            "crossfade_time" => {
-                if let Some(v) = value.as_f64() {
-                    config.crossfade_time = v as f32;
-                }
-            }
-            "extra_time" => {
-                if let Some(v) = value.as_f64() {
-                    config.extra_time = v as f32;
-                }
-            }
-            "n_cpu" => {
-                if let Some(v) = value.as_i64() {
-                    config.n_cpu = v as usize;
-                }
-            }
-            "use_pv" => {
-                if let Some(v) = value.as_bool() {
-                    config.use_pv = v;
-                }
-            }
-            _ => {}
         })
         .map_err(|e| e.to_string())
 }
